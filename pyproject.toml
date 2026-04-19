@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scanner-agent"
+version = "0.1.0"
+description = "Safe-first AI-assisted file intelligence and duplicate detection engine."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "William Rafael Collado Santiago" }
+]
+license = { text = "MIT" }
+dependencies = [
+  "google-genai>=1.11.0",
+  "google-auth-oauthlib>=1.2.0",
+  "google-api-python-client>=2.170.0",
+  "python-dotenv>=1.0.1",
+  "psutil>=5.9.8"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.11.0"
+]
+
+[project.scripts]
+scanner-agent = "scanner_agent.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
