@@ -244,3 +244,71 @@ Planned and potential future work:
 
 This project is intended as an educational and utility tool.  
 Add a license file (for example, MIT) to clarify usage rights before using it in production or publishing derived work.
+---
+
+## Future Vision
+
+This project started as a safe-first file scanner focused on exact duplicate detection, but its long-term direction is broader: evolve into a modular intelligence agent that can analyze files, structured records, and database-backed systems.
+
+### Planned Scanner Expansion
+
+The current CLI supports the `local` scanner backend. Future scanner backends may include:
+
+- `database` – scan database tables, records, and metadata from relational systems.
+- `cloud` – scan cloud storage or cloud-connected sources.
+- `email` – inspect e-mail attachments and related artifacts.
+- `external` – connect to external APIs or third-party data sources.
+
+These scanner backends are intended to share a common workflow: ingest data safely, normalize records, apply matching or analysis rules, and write structured reports.
+
+### Planned Data and Database Analysis
+
+A future version of `scanner_agent` may support database-oriented analysis ranging from small local datasets to large production-scale systems.
+
+Possible database capabilities include:
+
+- Reading table metadata and schema information.
+- Scanning records in batches instead of loading entire datasets into memory.
+- Supporting SQL-based sources such as PostgreSQL, MySQL, and SQL Server.
+- Exporting findings into structured reports for audit and review workflows.
+
+For large databases, scans should be designed to work incrementally, with pagination, filters, partitions, or scoped queries to reduce performance impact.
+
+### Planned Entity Resolution
+
+One important future goal is to detect when multiple records may refer to the same real-world person, vendor, company, or organization.
+
+Possible entity-resolution capabilities include:
+
+- Exact matching on strong identifiers.
+- Rule-based matching across names, addresses, phone numbers, e-mails, and dates.
+- Fuzzy matching for near-duplicate names or partially inconsistent records.
+- Confidence scoring to separate high-confidence matches from human-review cases.
+
+This would allow the agent to move beyond exact file duplication and toward real duplicate-record detection across systems.
+
+### Planned Payment and Audit Intelligence
+
+A future goal is to help identify potentially suspicious or redundant payment activity across organizations, agencies, or business systems.
+
+Possible use cases include:
+
+- Detecting duplicate payments for the same invoice, amount, vendor, or date range.
+- Finding vendors or employees that appear multiple times under slightly different records.
+- Identifying repeated payments that may represent process errors, data quality issues, or fraud risk.
+- Producing explainable review outputs for auditors, investigators, or compliance teams.
+
+This functionality is intended as an audit-support and anomaly-detection feature, not as an automatic accusation system. Human review would remain essential.
+
+### Development Approach
+
+These ideas are intentionally planned as future phases.
+
+The project will continue to evolve in small, testable steps:
+
+1. Stabilize the local file scanner and CLI.
+2. Introduce scanner abstractions for multiple backends.
+3. Add database scanning skeletons and structured connectors.
+4. Add record normalization and matching pipelines.
+5. Add entity resolution and payment anomaly analysis features.
+6. Expand reporting for human review and audit workflows.
