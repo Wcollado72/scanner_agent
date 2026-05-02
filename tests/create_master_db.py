@@ -18,7 +18,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-DB_PATH = "tests/data/master_depurado.db"
+DB_PATH = "tests/data/matriz_certificada.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 SCHEMA = """
@@ -124,9 +124,9 @@ conn.execute("""
     )
 """)
 meta = [
-    ("version",         "0.5.0"),
+    ("version",         "0.7.0"),
     ("created_at",      datetime.now().isoformat()),
-    ("description",     "Base maestra de registros ciudadanos depurados — scanner_agent"),
+    ("description",     "Matriz certificada de registros depurados — scanner_agent"),
     ("fuentes_activas", '["CEE", "CESCO", "RD"]'),
     ("owner",           "Sabias que PR — audit intelligence project"),
 ]
@@ -138,7 +138,7 @@ tables = conn.execute(
 ).fetchall()
 conn.close()
 
-print(f"master_depurado.db creada: {DB_PATH}")
+print(f"matriz_certificada.db creada: {DB_PATH}")
 print(f"  Tablas creadas:")
 for (t,) in tables:
     print(f"    - {t}")

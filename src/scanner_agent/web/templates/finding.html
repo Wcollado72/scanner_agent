@@ -237,16 +237,44 @@
         </div>
         <div class="card-body">
           <form method="POST" action="{{ url_for('confirm_finding', idx=idx) }}" class="mb-3">
+
+            {# Selector de accion contextual segun el tipo de flag #}
+            <label class="form-label small fw-semibold mb-1">
+              <i class="bi bi-lightning-charge-fill text-warning me-1"></i>Accion a tomar
+            </label>
+            <select name="accion_tomada" class="form-select form-select-sm mb-2" required>
+              <option value="" disabled selected>— Selecciona una accion —</option>
+              {% for codigo, descripcion in flag_acciones %}
+              <option value="{{ codigo }}">{{ descripcion }}</option>
+              {% endfor %}
+            </select>
+
+            <label class="form-label small fw-semibold mb-1">Notas del auditor</label>
             <textarea name="notes" class="form-control form-control-sm mb-2" rows="2"
-                      placeholder="Notas (opcional)"></textarea>
-            <button type="submit" class="btn btn-success w-100">
-              <i class="bi bi-check-circle me-1"></i>Confirmar duplicado
+                      placeholder="Observaciones, evidencia consultada, etc."></textarea>
+
+            {% if matriz_activa %}
+            <div class="alert alert-success py-2 px-3 mb-2 small">
+              <i class="bi bi-database-check me-1"></i>
+              Al confirmar, el registro se certificará en <strong>matriz_certificada.db</strong>
+            </div>
+            {% else %}
+            <div class="alert alert-secondary py-2 px-3 mb-2 small">
+              <i class="bi bi-database-x me-1"></i>
+              Matriz no conectada. Inicia con <code>--matriz</code> para certificar.
+            </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-success w-100"
+                    onclick="return confirm('Confirmar hallazgo y certificar en la matriz?')">
+              <i class="bi bi-check-circle me-1"></i>Confirmar y Certificar
             </button>
           </form>
+
           <form method="POST" action="{{ url_for('reject_finding', idx=idx) }}">
             <textarea name="notes" class="form-control form-control-sm mb-2" rows="2"
                       placeholder="Motivo del rechazo (opcional)"></textarea>
-            <button type="submit" class="btn btn-outline-primary w-100">
+            <button type="submit" class="btn btn-outline-secondary w-100">
               <i class="bi bi-x-circle me-1"></i>Rechazar (falso positivo)
             </button>
           </form>

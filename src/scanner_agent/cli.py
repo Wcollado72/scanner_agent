@@ -108,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="127.0.0.1",
         help="[serve] Host for the web review dashboard. Default: 127.0.0.1 (localhost only).",
     )
+    parser.add_argument(
+        "--matriz",
+        default="",
+        help="[serve] Path to matriz_certificada.db. Created automatically if absent. "
+             "Example: --matriz reports/matriz_certificada.db",
+    )
     # Shared options
     parser.add_argument(
         "--output-dir",
@@ -618,8 +624,15 @@ def main() -> None:
             else report_path.parent / "review_log.json"
         )
 
+        # Matriz certificada path (optional)
+        matriz_path = (
+            Path(args.matriz).expanduser().resolve()
+            if args.matriz
+            else report_path.parent / "matriz_certificada.db"
+        )
+
         from scanner_agent.web.app import app as flask_app, init_app
-        init_app(report_path, review_log_path)
+        init_app(report_path, review_log_path, matriz_path=matriz_path)
 
         sep = "-" * 56
         print()
@@ -627,6 +640,7 @@ def main() -> None:
         print("  scanner_agent — Web Review Dashboard")
         print(f"  Report     : {report_path}")
         print(f"  Review log : {review_log_path}")
+        print(f"  Matriz     : {matriz_path}")
         print(f"  URL        : http://{args.host}:{args.port}")
         print(f"  Roles      : set REVIEWER_PASSWORD / ADMIN_PASSWORD in .env")
         print(f"  Press Ctrl+C to stop.")

@@ -1,5 +1,5 @@
 """
-scanner_agent.web.app  v0.4.0
+scanner_agent.web.app  v0.7.0
 Web review dashboard for scanner_agent audit reports.
 
 Launch via CLI:
@@ -53,6 +53,10 @@ DEFAULT_DOCS = {
 _report: dict = {}
 _review_log_path: Path | None = None
 _review_log: dict = {}
+_matriz_path: Path | None = None      # ruta a matriz_certificada.db
+
+# Acciones disponibles por tipo de flag (importadas desde matriz_writer)
+from scanner_agent.web.matriz_writer import ACCIONES_POR_FLAG  # noqa: E402
 
 
 def _now_iso() -> str:
@@ -68,8 +72,10 @@ def _save_review_log() -> None:
     )
 
 
-def init_app(report_path: Path, review_log_path: Path) -> None:
-    global _report, _review_log_path, _review_log
+def init_app(report_path: Path, review_log_path: Path,
+             matriz_path: Path | None = None) -> None:
+    global _report, _review_log_path, _review_log, _matriz_path
+    _matriz_path = matriz_path
     _report = json.loads(report_path.read_text(encoding="utf-8"))
     _review_log_path = review_log_path
     if review_log_path.exists():
@@ -212,6 +218,9 @@ def finding(idx):
             merged.update(edited[str(j)])
         merged["_deleted"] = j in deleted
         records.append(merged)
+    flag_acciones = ACCIONES_POR_FLAG.get(f["flag"], [
+        ("CONFIRMADO", "Confirmar hallazgo"),
+    ])
     return render_template(
         "finding.html",
         idx=idx, finding=f, records=records,
@@ -223,6 +232,8 @@ def finding(idx):
         total=len(findings),
         needs_contact=f["flag"] in CONTACT_FLAGS,
         default_docs=DEFAULT_DOCS.get(f["flag"], ""),
+        flag_acciones=flag_acciones,
+        matriz_activa=_matriz_path is not None,
     )
 
 
@@ -231,8 +242,40 @@ def finding(idx):
 @app.route("/finding/<int:idx>/confirm", methods=["POST"])
 @require_login
 def confirm_finding(idx):
-    _apply_status(idx, "confirmed", "confirm", request.form.get("notes", "").strip())
-    flash("Hallazgo confirmado como duplicado.", "success")
+    findings = _report.get("findings", [])
+    if not (0 <= idx < len(findings)):
+        flash("Hallazgo no encontrado.", "danger")
+        return redirect(url_for("dashboard"))
+
+    accion_tomada = request.form.get("accion_tomada", "").strip()
+    notes         = request.form.get("notes", "").strip()
+    auditado_por  = session.get("role_label", session.get("role", "revisor"))
+
+    # Escribir a matriz_certificada.db si está configurada
+    matriz_msg = ""
+    if _matriz_path and accion_tomada:
+        try:
+            from scanner_agent.web.matriz_writer import write_confirmed_finding
+            review = _review_log.get("reviews", {}).get(str(idx), {})
+            result = write_confirmed_finding(
+                db_path       = _matriz_path,
+                finding       = findings[idx],
+                review        = review,
+                accion_tomada = accion_tomada,
+                auditado_por  = auditado_por,
+                notas         = notes,
+            )
+            n = result["registros_escritos"]
+            matriz_msg = f" {n} registro(s) certificado(s) en matriz."
+            logger.info("Matriz: %d registros escritos para finding %d (%s)",
+                        n, idx, accion_tomada)
+        except Exception as exc:
+            logger.error("Error escribiendo a matriz_certificada: %s", exc)
+            flash(f"Hallazgo confirmado pero hubo un error al escribir la matriz: {exc}", "warning")
+
+    _apply_status(idx, "confirmed", "confirm",
+                  f"[{accion_tomada}] {notes}".strip(" []"))
+    flash(f"Hallazgo confirmado — {accion_tomada}.{matriz_msg}", "success")
     return redirect(url_for("finding", idx=idx))
 
 
@@ -338,6 +381,20 @@ def log_citation(idx):
     _save_review_log()
     flash(f"Citacion registrada para {entry['nombre'] or 'registro ' + str(rec_idx+1)}.", "success")
     return redirect(url_for("finding", idx=idx))
+
+
+# ── Routes: matriz certificada ────────────────────────────────────────────
+
+@app.route("/matriz")
+@require_login
+def matriz_stats():
+    """Resumen de registros certificados en matriz_certificada.db."""
+    if not _matriz_path:
+        flash("Matriz certificada no configurada. Use --matriz al iniciar el servidor.", "warning")
+        return redirect(url_for("dashboard"))
+    from scanner_agent.web.matriz_writer import get_stats
+    stats = get_stats(_matriz_path)
+    return render_template("matriz.html", stats=stats, matriz_path=str(_matriz_path))
 
 
 # ── Routes: Excel export ───────────────────────────────────────────────────

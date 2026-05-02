@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Matriz Certificada{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div>
+    <h4 class="mb-0 fw-bold">
+      <i class="bi bi-database-check me-2 text-success"></i>Matriz Certificada
+    </h4>
+    <small class="text-muted">{{ matriz_path }}</small>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Volver al Dashboard
+  </a>
+</div>
+
+<!-- Totales -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card border-0 shadow-sm text-center py-3">
+      <div class="display-6 fw-bold text-success">{{ stats.total }}</div>
+      <div class="small text-muted mt-1">Registros Certificados</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card border-0 shadow-sm text-center py-3">
+      <div class="display-6 fw-bold text-primary">{{ stats.alertas_resueltas }}</div>
+      <div class="small text-muted mt-1">Alertas Resueltas</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card border-0 shadow-sm text-center py-3">
+      <div class="display-6 fw-bold text-info">
+        {{ stats.por_estado.get('verified', 0) }}
+      </div>
+      <div class="small text-muted mt-1">Verificados</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card border-0 shadow-sm text-center py-3">
+      <div class="display-6 fw-bold text-danger">
+        {{ stats.por_estado.get('deceased', 0) + stats.por_estado.get('deleted', 0) }}
+      </div>
+      <div class="small text-muted mt-1">Bajas (fallecidos + eliminados)</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Por estado -->
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white fw-semibold py-3">
+        <i class="bi bi-pie-chart me-1"></i>Por Estado de Auditoría
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr><th>Estado</th><th class="text-end">Registros</th></tr>
+          </thead>
+          <tbody>
+            {% for estado, n in stats.por_estado.items() %}
+            <tr>
+              <td>
+                {% if estado == 'verified' %}
+                  <span class="badge bg-success">verified</span>
+                {% elif estado == 'deceased' %}
+                  <span class="badge bg-danger">deceased</span>
+                {% elif estado == 'deleted' %}
+                  <span class="badge bg-dark">deleted</span>
+                {% elif estado == 'flagged' %}
+                  <span class="badge bg-warning text-dark">flagged</span>
+                {% elif estado == 'pending_review' %}
+                  <span class="badge bg-info text-dark">pending_review</span>
+                {% else %}
+                  <span class="badge bg-secondary">{{ estado }}</span>
+                {% endif %}
+              </td>
+              <td class="text-end fw-semibold">{{ n }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="2" class="text-muted text-center py-3">Sin registros aún</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Por accion tomada -->
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white fw-semibold py-3">
+        <i class="bi bi-list-check me-1"></i>Por Acción Tomada
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr><th>Acción</th><th class="text-end">Registros</th></tr>
+          </thead>
+          <tbody>
+            {% for accion, n in stats.por_accion.items() %}
+            <tr>
+              <td><code class="small">{{ accion }}</code></td>
+              <td class="text-end fw-semibold">{{ n }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="2" class="text-muted text-center py-3">Sin acciones registradas aún</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if stats.total == 0 %}
+<div class="alert alert-info mt-4">
+  <i class="bi bi-info-circle me-2"></i>
+  La matriz está vacía. Confirma hallazgos desde el
+  <a href="{{ url_for('dashboard') }}">dashboard</a> para poblarla.
+</div>
+{% endif %}
+
+{% endblock %}
