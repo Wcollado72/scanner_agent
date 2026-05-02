@@ -26,20 +26,28 @@ REVIEWER_PASSWORD = os.environ.get("REVIEWER_PASSWORD", "")
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "")
 
 FLAG_META = {
-    "EXACT_DUPLICATE":   ("danger",    "Duplicado Exacto"),
-    "NEAR_DUPLICATE":    ("warning",   "Duplicado Aproximado"),
-    "POSSIBLE_DECEASED": ("info",      "Posiblemente Fallecido"),
-    "ANOMALY":           ("secondary", "Anomalia"),
+    "EXACT_DUPLICATE":          ("danger",    "Duplicado Exacto"),
+    "NEAR_DUPLICATE":           ("warning",   "Duplicado Aproximado"),
+    "POSSIBLE_DECEASED":        ("info",      "Posiblemente Fallecido"),
+    "ANOMALY":                  ("secondary", "Anomalia"),
+    "ADDRESS_CLUSTER":          ("dark",      "Concentracion de Direccion"),
+    "CONFIRMED_DECEASED":       ("danger",    "Fallecido Confirmado"),
+    "NAME_MISMATCH_CROSS_DB":   ("warning",   "Inconsistencia de Nombre"),
+    "SSN_CROSS_DB_CONFLICT":    ("danger",    "Conflicto SSN Multi-Base"),
 }
 
 # Flags that require human follow-up (call / citation)
-CONTACT_FLAGS = {"NEAR_DUPLICATE", "POSSIBLE_DECEASED", "ANOMALY"}
+CONTACT_FLAGS = {"NEAR_DUPLICATE", "POSSIBLE_DECEASED", "ANOMALY", "ADDRESS_CLUSTER", "NAME_MISMATCH_CROSS_DB", "SSN_CROSS_DB_CONFLICT"}
 
 # Default documents required per flag type
 DEFAULT_DOCS = {
-    "NEAR_DUPLICATE":    "Identificacion con foto vigente, Certificado de nacimiento, Comprobante de direccion",
-    "POSSIBLE_DECEASED": "Certificado de nacimiento, Identificacion con foto vigente",
-    "ANOMALY":           "Identificacion con foto vigente, Certificado de nacimiento",
+    "NEAR_DUPLICATE":          "Identificacion con foto vigente, Certificado de nacimiento, Comprobante de direccion",
+    "POSSIBLE_DECEASED":       "Certificado de nacimiento, Identificacion con foto vigente",
+    "ANOMALY":                 "Identificacion con foto vigente, Certificado de nacimiento",
+    "ADDRESS_CLUSTER":         "Comprobante de residencia vigente, Identificacion con foto vigente, Contrato de arrendamiento o escritura",
+    "CONFIRMED_DECEASED":      "Certificado de defuncion, Registro Demografico, Acta de defuncion",
+    "NAME_MISMATCH_CROSS_DB":  "Real ID vigente, Certificado de nacimiento, Documento oficial con nombre correcto",
+    "SSN_CROSS_DB_CONFLICT":   "Real ID vigente, Tarjeta de Seguro Social original, Certificado de nacimiento",
 }
 
 _report: dict = {}

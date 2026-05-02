@@ -19,9 +19,9 @@ from scanner_agent.scanners.local_scanner import scan_local_paths
 
 logger = logging.getLogger(__name__)
 
-CLI_VERSION = "0.4.0"
+CLI_VERSION = "0.6.0"
 
-SUPPORTED_SCANNERS = ("local", "db", "serve")
+SUPPORTED_SCANNERS = ("local", "db", "cross-db", "serve")
 
 # ── Rich import (optional — degrades gracefully if not installed) ──────────
 try:
@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-alias",
         default="",
         help="[db] Human label for the source (e.g. CEE, CESCO). Used in reports.",
+    )
+    # Cross-DB scanner options
+    parser.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        metavar="ALIAS:connection_string:table",
+        help=(
+            "[cross-db] Fuente de datos en formato ALIAS:connection_string:table. "
+            "Puede repetirse para cada base de datos. "
+            "Ejemplos: "
+            "  CEE:sqlite:///tests/data/mock_cee.db:electores "
+            "  RD:sqlite:///tests/data/mock_rd.db:defunciones "
+            "  CESCO:sqlite:///tests/data/mock_cesco.db:documentos "
+            "  CEE:mssql+pyodbc://server/AuditDB?driver=ODBC+Driver+18+for+SQL+Server:electores"
+        ),
     )
     # Web serve options
     parser.add_argument(
@@ -196,6 +212,7 @@ def _print_db_summary(source, table, total_rows, match_groups, inv_path, dup_pat
             f"  Rows scanned    : {total_rows}",
             f"  Exact duplicates: {flag_counts.get('EXACT_DUPLICATE', 0)} groups",
             f"  Near-duplicates : {flag_counts.get('NEAR_DUPLICATE', 0)} pairs",
+            f"  Address clusters: {flag_counts.get('ADDRESS_CLUSTER', 0)} clusters",
             f"  Possible deceased:{flag_counts.get('POSSIBLE_DECEASED', 0)} records",
             f"  Anomalies       : {flag_counts.get('ANOMALY', 0)} records",
             f"  Elapsed         : {elapsed:.2f}s",
@@ -221,6 +238,8 @@ def _print_rich_db(source, table, total_rows, match_groups, flag_counts,
                     f"[red]{flag_counts.get('EXACT_DUPLICATE', 0)}[/red] groups")
     summary.add_row("Near-duplicates",
                     f"[yellow]{flag_counts.get('NEAR_DUPLICATE', 0)}[/yellow] pairs")
+    summary.add_row("Address clusters",
+                    f"[dark_orange]{flag_counts.get('ADDRESS_CLUSTER', 0)}[/dark_orange] clusters")
     summary.add_row("Possible deceased",
                     f"[cyan]{flag_counts.get('POSSIBLE_DECEASED', 0)}[/cyan] records")
     summary.add_row("Anomalies",
@@ -236,10 +255,11 @@ def _print_rich_db(source, table, total_rows, match_groups, flag_counts,
                    box=rich_box.SIMPLE_HEAVY, title="Sample Findings (first 8)",
                    title_style="bold yellow")
         flag_colors = {
-            "EXACT_DUPLICATE": "red",
-            "NEAR_DUPLICATE":  "yellow",
+            "EXACT_DUPLICATE":   "red",
+            "NEAR_DUPLICATE":    "yellow",
+            "ADDRESS_CLUSTER":   "dark_orange",
             "POSSIBLE_DECEASED": "cyan",
-            "ANOMALY": "magenta",
+            "ANOMALY":           "magenta",
         }
         for g in sample:
             color = flag_colors.get(g.flag, "white")
@@ -297,7 +317,7 @@ def _municipio_stats(match_groups) -> dict:
     from collections import defaultdict
     stats: dict[str, dict[str, int]] = defaultdict(lambda: {
         "EXACT_DUPLICATE": 0, "NEAR_DUPLICATE": 0,
-        "POSSIBLE_DECEASED": 0, "ANOMALY": 0, "total": 0,
+        "POSSIBLE_DECEASED": 0, "ANOMALY": 0, "ADDRESS_CLUSTER": 0, "total": 0,
     })
     for g in match_groups:
         muns = {r.municipio for r in g.records if r.municipio}
@@ -412,6 +432,8 @@ def main() -> None:
         flag_counts = Counter(g.flag for g in match_groups)
         ssn_conflicts = sum(1 for g in match_groups if g.strategy == "ssn_identity_conflict")
 
+        addr_clusters = sum(1 for g in match_groups if g.flag == "ADDRESS_CLUSTER")
+
         scan_meta = {
             "scan_timestamp":         scan_started_at.isoformat(),
             "source":                 db_config.source_label,
@@ -420,6 +442,7 @@ def main() -> None:
             "total_rows_scanned":     len(row_records),
             "exact_duplicate_groups": flag_counts.get("EXACT_DUPLICATE", 0),
             "near_duplicate_pairs":   flag_counts.get("NEAR_DUPLICATE", 0),
+            "address_clusters":       addr_clusters,
             "possible_deceased":      flag_counts.get("POSSIBLE_DECEASED", 0),
             "anomalies":              flag_counts.get("ANOMALY", 0),
             "ssn_identity_conflicts":  ssn_conflicts,
@@ -440,6 +463,139 @@ def main() -> None:
             dup_path=audit_path,
             elapsed=elapsed,
         )
+
+    # ── CROSS-DB SCANNER ──────────────────────────────────────────────────
+    elif args.scanner == "cross-db":
+        from scanner_agent.detection.cross_db_matcher import run_cross_db_match
+        from collections import Counter as _Counter
+
+        if not args.sources:
+            print(
+                "[ERROR] --source es requerido para --scanner cross-db.\n"
+                "  Ejemplo:\n"
+                "    --source CEE:sqlite:///tests/data/mock_cee.db:electores\n"
+                "    --source RD:sqlite:///tests/data/mock_rd.db:defunciones\n"
+                "    --source CESCO:sqlite:///tests/data/mock_cesco.db:documentos",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Field maps per source alias
+        FIELD_MAPS = {
+            "CEE": {
+                "row_id":"num_elector","nombre":"nombre",
+                "apellido_paterno":"apellido_paterno","apellido_materno":"apellido_materno",
+                "fecha_nacimiento":"fecha_nacimiento","edad":"edad","genero":"genero",
+                "direccion":"direccion","municipio":"municipio","seguro_social":"seguro_social",
+                "telefono":"telefono","tipo_telefono":"tipo_telefono",
+            },
+            "RD": {
+                "row_id":"cert_num","nombre":"nombre",
+                "apellido_paterno":"apellido_paterno","apellido_materno":"apellido_materno",
+                "fecha_nacimiento":"fecha_nacimiento","municipio":"municipio_res",
+                "seguro_social":"seguro_social",
+            },
+            "CESCO": {
+                "row_id":"doc_num","nombre":"nombre",
+                "apellido_paterno":"apellido_paterno","apellido_materno":"apellido_materno",
+                "fecha_nacimiento":"fecha_nacimiento","genero":"genero",
+                "direccion":"direccion","municipio":"municipio","seguro_social":"seguro_social",
+                "telefono":"telefono",
+            },
+        }
+
+        source_groups: dict = {}
+        total_rows_all = 0
+
+        for source_spec in args.sources:
+            # Format: ALIAS:connection_string:table
+            # The connection_string may contain colons (e.g. sqlite:///path or mssql+pyodbc://...)
+            # Split only on the first and last colon-separated token
+            parts = source_spec.split(":", 1)
+            if len(parts) < 2:
+                print(f"[ERROR] Formato invalido: {source_spec!r}. Use ALIAS:connection_string:table",
+                      file=sys.stderr)
+                sys.exit(1)
+            alias    = parts[0].upper()
+            rest     = parts[1]  # connection_string:table
+            # Table is always the last colon-separated token
+            rest_parts = rest.rsplit(":", 1)
+            if len(rest_parts) < 2:
+                print(f"[ERROR] No se encontro la tabla en: {source_spec!r}", file=sys.stderr)
+                sys.exit(1)
+            conn_str = rest_parts[0]
+            table    = rest_parts[1]
+
+            field_map = FIELD_MAPS.get(alias, {})
+            if not field_map:
+                logger.warning("No hay field_map predefinido para alias '%s'. "
+                               "Solo se extraeran campos basicos.", alias)
+                field_map = {
+                    "row_id":"id","nombre":"nombre",
+                    "apellido_paterno":"apellido_paterno","apellido_materno":"apellido_materno",
+                    "fecha_nacimiento":"fecha_nacimiento","seguro_social":"seguro_social",
+                    "municipio":"municipio",
+                }
+
+            db_cfg = DbScanConfig(
+                connection_string=conn_str,
+                table=table,
+                field_map=field_map,
+                source_alias=alias,
+            )
+            try:
+                records = scan_db_table(db_cfg)
+                source_groups[alias] = records
+                total_rows_all += len(records)
+                logger.info("Loaded %d records from %s (%s)", len(records), alias, table)
+            except Exception as exc:
+                print(f"[ERROR] Fallo al cargar {alias} ({conn_str}): {exc}", file=sys.stderr)
+                sys.exit(1)
+
+        match_groups = run_cross_db_match(source_groups)
+        elapsed = time.perf_counter() - start_time
+
+        flag_counts = _Counter(g.flag for g in match_groups)
+        scan_meta = {
+            "scan_timestamp":       scan_started_at.isoformat(),
+            "scanner":              "cross-db",
+            "sources":              {k: len(v) for k, v in source_groups.items()},
+            "total_rows_scanned":   total_rows_all,
+            "confirmed_deceased":   flag_counts.get("CONFIRMED_DECEASED", 0),
+            "name_mismatch":        flag_counts.get("NAME_MISMATCH_CROSS_DB", 0),
+            "ssn_cross_db_conflict":flag_counts.get("SSN_CROSS_DB_CONFLICT", 0),
+            "duration_seconds":     round(elapsed, 3),
+        }
+
+        audit_path = output_dir / "audit_cross_db.json"
+        _write_db_audit_report(audit_path, match_groups, scan_meta)
+
+        # Rich terminal output
+        if _RICH:
+            _console.rule("[bold blue]scanner_agent — Cross-DB Audit[/bold blue]")
+            t = Table(box=rich_box.SIMPLE, show_header=False, padding=(0,1))
+            t.add_column("Key", style="dim", min_width=26)
+            t.add_column("Value", style="bold")
+            for alias, recs in source_groups.items():
+                t.add_row(f"Source: {alias}", f"{len(recs):,} registros")
+            t.add_row("Fallecidos confirmados",
+                      f"[red]{flag_counts.get('CONFIRMED_DECEASED',0)}[/red]")
+            t.add_row("Inconsistencias de nombre",
+                      f"[yellow]{flag_counts.get('NAME_MISMATCH_CROSS_DB',0)}[/yellow]")
+            t.add_row("Conflictos SSN cross-DB",
+                      f"[red]{flag_counts.get('SSN_CROSS_DB_CONFLICT',0)}[/red]")
+            t.add_row("Elapsed", f"{elapsed:.2f}s")
+            t.add_row("Reporte", str(audit_path))
+            _console.print(t)
+            _console.print()
+        else:
+            print(f"  Cross-DB Audit — {total_rows_all} registros totales")
+            for alias, recs in source_groups.items():
+                print(f"    {alias}: {len(recs)}")
+            print(f"  Fallecidos confirmados   : {flag_counts.get('CONFIRMED_DECEASED',0)}")
+            print(f"  Inconsistencias nombre   : {flag_counts.get('NAME_MISMATCH_CROSS_DB',0)}")
+            print(f"  Conflictos SSN cross-DB  : {flag_counts.get('SSN_CROSS_DB_CONFLICT',0)}")
+            print(f"  Reporte                  : {audit_path}")
 
     # ── WEB SERVE ─────────────────────────────────────────────────────────
     elif args.scanner == "serve":

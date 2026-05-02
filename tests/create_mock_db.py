@@ -216,6 +216,70 @@ for dob in [date(1894, 3, 15), date(1887, 7, 22), date(1899, 11, 5),
     records.append(r)
     idx += 1
 
+# 7. Casos de prueba especificos para cruce cross-DB
+# ─────────────────────────────────────────────────────────────────────────
+# Caso 1 (CEE): Maria Elena Torres Rivera — licencia CESCO dice "Riera"
+records.append(make_person(
+    idx,
+    nombre="Maria Elena", apellido_p="Torres", apellido_m="Rivera",
+    dob=date(1965, 3, 14), municipio="San Juan",
+    address="Calle Loiza #412", ssn="***-**-9922", genero="F",
+    telefono="787-555-1234", tipo_telefono="Movil",
+))
+idx += 1
+
+# Caso 2 (CEE): Jose Perez Colon — activo en CEE, fallecido en RD el 2022-11-15
+records.append(make_person(
+    idx,
+    nombre="Jose", apellido_p="Perez", apellido_m="Colon",
+    dob=date(1940, 7, 22), municipio="Caguas",
+    address="Calle Luna #18", ssn="***-**-7291", genero="M",
+))
+idx += 1
+
+# Caso 3 (CEE): Elector con SSN ***-**-4471 — mismo SSN en RD (fallecido) y 3 en CESCO
+records.append(make_person(
+    idx,
+    nombre="Ana", apellido_p="Santos", apellido_m="Gomez",
+    dob=date(1975, 5, 20), municipio="Bayamon",
+    address="Calle Sol #10", ssn="***-**-4471", genero="F",
+))
+idx += 1
+
+# 8. Address clusters - concentracion anomala en misma direccion
+# ─────────────────────────────────────────────────────────────────────────
+# Scenario A: 30 voters at one residential address (hard threshold = 20)
+CLUSTER_ADDR_A = "Calle San Jorge #45"
+CLUSTER_MUN_A  = "San Juan"
+for _ in range(30):
+    r = make_person(idx, address=CLUSTER_ADDR_A, municipio=CLUSTER_MUN_A)
+    records.append(r)
+    idx += 1
+
+# Scenario B: 12 voters at a PO Box (always flagged, 0-threshold)
+CLUSTER_ADDR_B = "PO Box 90210"
+CLUSTER_MUN_B  = "Bayamon"
+for _ in range(12):
+    r = make_person(idx, address=CLUSTER_ADDR_B, municipio=CLUSTER_MUN_B)
+    records.append(r)
+    idx += 1
+
+# Scenario C: 8 voters at a commercial Suite address (soft threshold = 2, hard = 5)
+CLUSTER_ADDR_C = "Ave Ponce de Leon 1050 Suite 301"
+CLUSTER_MUN_C  = "San Juan"
+for _ in range(8):
+    r = make_person(idx, address=CLUSTER_ADDR_C, municipio=CLUSTER_MUN_C)
+    records.append(r)
+    idx += 1
+
+# Scenario D: 9 voters at an urbanizacion street (soft threshold = 10 — soft flag)
+CLUSTER_ADDR_D = "Urb Santa Rosa Calle Orquidea #7"
+CLUSTER_MUN_D  = "Caguas"
+for _ in range(9):
+    r = make_person(idx, address=CLUSTER_ADDR_D, municipio=CLUSTER_MUN_D)
+    records.append(r)
+    idx += 1
+
 random.shuffle(records)
 
 # ── Crear la base de datos ─────────────────────────────────────────────────
@@ -273,4 +337,8 @@ print(f"mock_cee.db creada: {DB_PATH}")
 print(f"  Total registros         : {count}")
 print(f"  Con telefono            : {w_phone}")
 print(f"  Posibles fallecidos     : {deceased}")
-print(f"  Incluye: exactos, near-dups, fallecidos, anomalias")
+print(f"  Incluye: exactos, near-dups, fallecidos, anomalias, clusters de direccion")
+print(f"    - Cluster residencial  : 30 en Calle San Jorge #45, San Juan (hard)")
+print(f"    - Cluster PO Box       : 12 en PO Box 90210, Bayamon (siempre)")
+print(f"    - Cluster comercial    : 8 en Suite 301, San Juan (siempre)")
+print(f"    - Cluster urbanizacion : 9 en Urb Santa Rosa, Caguas (soft)")

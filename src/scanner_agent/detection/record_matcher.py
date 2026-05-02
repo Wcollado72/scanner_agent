@@ -1,12 +1,13 @@
 """
-record_matcher.py  v0.4.0 — Fuzzy matching engine for database records.
+record_matcher.py  v0.5.0 — Fuzzy matching engine for database records.
 
 Detects:
   1. Exact duplicates     — same canonical hash
   2. Near-duplicates      — weighted fuzzy name + DOB + SSN + municipio scoring
   3. SSN identity conflict— same SSN on names with low similarity (fraud/critical error)
-  4. Possible deceased    — edad > 100
-  5. Anomalous records    — edad < 0 or edad > 115
+  4. Address clusters     — anomalous concentration of voters at same address
+  5. Possible deceased    — edad > 100
+  6. Anomalous records    — edad < 0 or edad > 115
 
 Confidence is now weighted instead of flat:
   name_similarity: 40-65 pts  (scales with similarity above threshold)
@@ -284,22 +285,26 @@ def run_full_match(records: list[RowRecord]) -> list[RecordMatchGroup]:
       1. Exact duplicates      (deterministic, highest confidence)
       2. Near-duplicates       (fuzzy name within blocks, weighted confidence)
       3. SSN identity conflicts (cross-block SSN, high confidence)
-      4. Deceased / anomaly    (single-record flags)
+      4. Address clusters       (anomalous voter concentration per address)
+      5. Deceased / anomaly    (single-record flags)
     """
+    from scanner_agent.detection.address_analyzer import find_address_clusters
+
     exact = find_exact_duplicates(records)
 
     # Exclude exact-dup records from near-dup and SSN-conflict scans
     exact_ids: set[str] = {r.row_id for g in exact for r in g.records}
     remaining = [r for r in records if r.row_id not in exact_ids]
 
-    near    = find_near_duplicates(remaining)
-    ssn_cf  = find_ssn_conflicts(remaining)
-    flags   = find_deceased_and_anomalies(records)
+    near     = find_near_duplicates(remaining)
+    ssn_cf   = find_ssn_conflicts(remaining)
+    addr_cl  = find_address_clusters(records)   # uses ALL records (clusters span exact dups)
+    flags    = find_deceased_and_anomalies(records)
 
-    all_groups = exact + near + ssn_cf + flags
+    all_groups = exact + near + ssn_cf + addr_cl + flags
 
     logger.info(
-        "Full match: %d exact | %d near-dup | %d ssn-conflict | %d flags | %d total",
-        len(exact), len(near), len(ssn_cf), len(flags), len(all_groups),
+        "Full match: %d exact | %d near-dup | %d ssn-conflict | %d addr-clusters | %d flags | %d total",
+        len(exact), len(near), len(ssn_cf), len(addr_cl), len(flags), len(all_groups),
     )
     return all_groups

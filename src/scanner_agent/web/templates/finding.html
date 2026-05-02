@@ -57,6 +57,66 @@
       {% endif %}
 
       <div class="card-body">
+
+        {# ── ADDRESS_CLUSTER: compact table view for large groups ─────── #}
+        {% if finding.flag == 'ADDRESS_CLUSTER' and records|length > 4 %}
+        <div class="mb-2">
+          <span class="badge bg-dark me-1">{{ records|length }} registros</span>
+          <small class="text-muted">en la misma direccion</small>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle small mb-0">
+            <thead class="table-dark">
+              <tr>
+                <th>#</th>
+                <th>Nombre</th>
+                <th>Fecha Nac.</th>
+                <th>Municipio</th>
+                <th>Direccion</th>
+                <th>SSN</th>
+                <th>Telefono</th>
+                {% if role == 'admin' %}<th></th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in records %}
+              <tr {% if r._deleted %}class="table-danger text-decoration-line-through"{% endif %}>
+                <td class="text-muted">{{ loop.index }}</td>
+                <td class="fw-semibold">{{ r.get('nombre_completo','—') }}</td>
+                <td>{{ r.get('fecha_nacimiento','—') }}</td>
+                <td>{{ r.get('municipio','—') }}</td>
+                <td class="text-truncate" style="max-width:160px" title="{{ r.get('direccion','') }}">
+                  {{ r.get('direccion','—') }}</td>
+                <td><code class="small">{{ r.get('seguro_social','—') }}</code></td>
+                <td>{{ r.get('telefono','—') }}</td>
+                {% if role == 'admin' and not r._deleted %}
+                <td>
+                  <button class="btn btn-xs btn-outline-danger py-0 px-1"
+                          data-bs-toggle="collapse"
+                          data-bs-target="#del-cl-{{ loop.index0 }}"
+                          title="Eliminar">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                  <div class="collapse" id="del-cl-{{ loop.index0 }}">
+                    <form method="POST" class="mt-1"
+                          action="{{ url_for('delete_record', idx=idx, rec_idx=loop.index0) }}"
+                          onsubmit="return confirm('Marcar para eliminacion?')">
+                      <input type="text" name="notes" class="form-control form-control-sm border-danger mb-1"
+                             placeholder="Motivo...">
+                      <button type="submit" class="btn btn-sm btn-danger w-100">Confirmar</button>
+                    </form>
+                  </div>
+                </td>
+                {% elif role == 'admin' %}
+                <td><span class="badge bg-danger small">Eliminado</span></td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        {# ── Default: card grid (≤4 records or non-cluster flags) ──────── #}
         <div class="row g-3">
           {% for r in records %}
           <div class="col-md-6">
@@ -160,6 +220,7 @@
           </div>
           {% endfor %}
         </div>
+        {% endif %}{# end address-cluster / card-grid branch #}
       </div>
     </div><!-- /findings card -->
   </div><!-- /col-lg-8 -->

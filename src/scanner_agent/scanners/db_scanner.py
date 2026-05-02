@@ -1,15 +1,17 @@
 """
-db_scanner.py — Database scanner for audit intelligence.
+db_scanner.py  v0.6.0 — Multi-backend database scanner for audit intelligence.
 
-Phase 2: SQLite support (local, zero-dependency testing).
-Designed to be extended to SQL Server, PostgreSQL, Oracle, or CSV
-when real database access is granted.
+Supported backends:
+  sqlite    sqlite:///path/to/file.db          (built-in, no extra deps)
+  mssql     mssql+pyodbc://user:pass@server/db?driver=ODBC+Driver+18+for+SQL+Server
+  mysql     mysql+pymysql://user:pass@host:3306/database
+  csv       csv:///path/to/file.csv            (columna header row required)
 
 Usage:
     from scanner_agent.scanners.db_scanner import scan_db_table, DbScanConfig
 
     config = DbScanConfig(
-        connection_string="sqlite:///path/to/cee.db",
+        connection_string="sqlite:///tests/data/mock_cee.db",
         table="electores",
         field_map={
             "row_id":           "num_elector",
@@ -23,13 +25,14 @@ Usage:
             "municipio":        "municipio",
             "seguro_social":    "seguro_social",
         },
-        batch_size=500,
+        source_alias="CEE",
     )
     records = scan_db_table(config)
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import logging
 import sqlite3
@@ -41,6 +44,7 @@ from scanner_agent.models import RowRecord
 
 logger = logging.getLogger(__name__)
 
+
 # ── Configuration ──────────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
@@ -51,19 +55,21 @@ class DbScanConfig:
     connection_string examples:
         "sqlite:///C:/scanner_agent/tests/data/mock_cee.db"
         "sqlite:///:memory:"
-        "mssql://server/database"   # Phase 3 — not yet implemented
-        "postgresql://host/db"      # Phase 3 — not yet implemented
+        "mssql+pyodbc://sa:Password@localhost/AuditDB"
+            "  ?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+        "mysql+pymysql://root:password@localhost:3306/audit_db"
+        "csv:///C:/data/electores.csv"
 
     field_map maps RowRecord field names → actual column names in the table.
     Only mapped fields are extracted. Unmapped RowRecord fields stay None.
     """
 
     connection_string: str
-    table: str
+    table: str                              # table name (ignored for CSV)
     field_map: dict[str, str] = field(default_factory=dict)
     batch_size: int = 500
-    where_clause: str = ""          # Optional SQL WHERE (e.g. "activo = 1")
-    source_alias: str = ""          # Human label for reports (e.g. "CEE", "CESCO")
+    where_clause: str = ""                  # Optional SQL WHERE (e.g. "activo = 1")
+    source_alias: str = ""                  # Human label for reports (e.g. "CEE", "CESCO")
 
     @property
     def source_label(self) -> str:
@@ -71,14 +77,21 @@ class DbScanConfig:
 
     @property
     def db_type(self) -> str:
-        prefix = self.connection_string.split("://")[0].lower()
-        return prefix if "://" in self.connection_string else "sqlite"
+        cs = self.connection_string.lower()
+        if cs.startswith("sqlite"):
+            return "sqlite"
+        if cs.startswith("mssql"):
+            return "mssql"
+        if cs.startswith("mysql"):
+            return "mysql"
+        if cs.startswith("csv"):
+            return "csv"
+        return cs.split("://")[0] if "://" in cs else "unknown"
 
 
 # ── Normalization helpers ──────────────────────────────────────────────────
 
 def _normalize_text(text: str | None) -> str | None:
-    """Uppercase, strip, remove diacritics — used for canonical matching."""
     if text is None:
         return None
     nfkd = unicodedata.normalize("NFKD", text.strip().upper())
@@ -86,10 +99,6 @@ def _normalize_text(text: str | None) -> str | None:
 
 
 def _hash_row(record: RowRecord) -> str:
-    """
-    Compute a SHA-256 hash of the canonical identity fields.
-    Two records with identical hash are exact duplicates.
-    """
     parts = [
         _normalize_text(record.nombre) or "",
         _normalize_text(record.apellido_paterno) or "",
@@ -110,18 +119,14 @@ def _iter_sqlite_batches(
     where: str,
     batch_size: int,
 ) -> Iterator[list[dict[str, Any]]]:
-    """Yield batches of rows from a SQLite table without loading everything at once."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-
-    safe_cols = ", ".join(f'"{c}"' for c in columns)
+    safe_cols  = ", ".join(f'"{c}"' for c in columns)
     safe_table = f'"{table}"'
-    where_sql = f"WHERE {where}" if where else ""
+    where_sql  = f"WHERE {where}" if where else ""
     query = f"SELECT {safe_cols} FROM {safe_table} {where_sql}"
-
-    logger.debug("DB query: %s", query)
-
+    logger.debug("SQLite query: %s", query)
     try:
         cur.execute(query)
         while True:
@@ -133,75 +138,74 @@ def _iter_sqlite_batches(
         conn.close()
 
 
-# ── Main scan function ─────────────────────────────────────────────────────
+# ── SQLAlchemy connector (SQL Server + MySQL) ──────────────────────────────
 
-def scan_db_table(config: DbScanConfig) -> list[RowRecord]:
+def _iter_sqlalchemy_batches(
+    connection_string: str,
+    table: str,
+    columns: list[str],
+    where: str,
+    batch_size: int,
+) -> Iterator[list[dict[str, Any]]]:
     """
-    Scan a single database table and return a list of RowRecord objects.
-
-    Currently supports SQLite (connection_string starting with "sqlite:").
-    Phase 3 will add SQL Server, PostgreSQL, CSV connectors.
+    Generic SQLAlchemy batch iterator for SQL Server and MySQL.
+    Requires: pip install sqlalchemy pyodbc  (SQL Server)
+              pip install sqlalchemy pymysql (MySQL)
     """
-    db_type = config.db_type
-
-    if db_type not in ("sqlite",):
-        raise NotImplementedError(
-            f"Database type '{db_type}' is not yet supported. "
-            f"Supported: sqlite. SQL Server / PostgreSQL planned for Phase 3."
-        )
-
-    logger.info("Starting DB scan: table=%s source=%s", config.table, config.source_label)
-
-    # Extract the file path from the connection string
-    # "sqlite:///path/to/file.db" → "/path/to/file.db"
-    # "sqlite:///:memory:"        → ":memory:"
-    raw_path = config.connection_string.split("sqlite:///", 1)[-1]
-    if not raw_path:
-        raw_path = ":memory:"
-
-    # Determine which columns to fetch
-    field_map = config.field_map
-    db_columns: list[str] = list(field_map.values())
-
-    if not db_columns:
-        raise ValueError(
-            "field_map is empty. Provide at least one mapping from RowRecord field → column name."
-        )
-
-    records: list[RowRecord] = []
-    total_rows = 0
-    skipped = 0
-
     try:
-        for batch in _iter_sqlite_batches(
-            db_path=raw_path,
-            table=config.table,
-            columns=db_columns,
-            where=config.where_clause,
-            batch_size=config.batch_size,
-        ):
-            for raw in batch:
-                total_rows += 1
-                try:
-                    record = _raw_to_row_record(raw, config)
-                    records.append(record)
-                except Exception as exc:
-                    skipped += 1
-                    logger.warning("Skipping malformed row: %s", exc)
+        from sqlalchemy import create_engine, text
+    except ImportError:
+        raise ImportError(
+            "SQLAlchemy is required for SQL Server / MySQL connections.\n"
+            "Install with: pip install sqlalchemy"
+        )
 
-    except sqlite3.OperationalError as exc:
-        logger.error("DB scan failed for table '%s': %s", config.table, exc)
-        raise
+    engine = create_engine(connection_string, echo=False)
+    safe_cols  = ", ".join(f'[{c}]' if "mssql" in connection_string else f'`{c}`'
+                           for c in columns)
+    where_sql  = f"WHERE {where}" if where else ""
+    query_str  = f"SELECT {safe_cols} FROM {table} {where_sql}"
+    logger.debug("SQLAlchemy query: %s", query_str)
 
-    logger.info(
-        "DB scan complete: table=%s rows_read=%d skipped=%d records=%d",
-        config.table, total_rows, skipped, len(records),
-    )
-    return records
+    with engine.connect() as conn:
+        result = conn.execute(text(query_str))
+        keys   = list(result.keys())
+        while True:
+            rows = result.fetchmany(batch_size)
+            if not rows:
+                break
+            yield [dict(zip(keys, row)) for row in rows]
 
+    engine.dispose()
+
+
+# ── CSV connector ──────────────────────────────────────────────────────────
+
+def _iter_csv_batches(
+    csv_path: str,
+    columns: list[str],
+    batch_size: int,
+) -> Iterator[list[dict[str, Any]]]:
+    """
+    Read a CSV file row by row, yielding batches.
+    Columns not present in the CSV are returned as None.
+    """
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        batch: list[dict[str, Any]] = []
+        for row in reader:
+            filtered = {c: row.get(c) for c in columns}
+            batch.append(filtered)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+
+# ── Row mapper ────────────────────────────────────────────────────────────
 
 def _raw_to_row_record(raw: dict[str, Any], config: DbScanConfig) -> RowRecord:
-    """Map a raw database row dict to a RowRecord using the field_map."""
     fmap = config.field_map
 
     def get(field_name: str) -> Any:
@@ -215,26 +219,27 @@ def _raw_to_row_record(raw: dict[str, Any], config: DbScanConfig) -> RowRecord:
         edad = None
 
     nombre = get("nombre") or ""
-    ap = get("apellido_paterno") or ""
-    am = get("apellido_materno") or ""
+    ap     = get("apellido_paterno") or ""
+    am     = get("apellido_materno") or ""
 
     record = RowRecord(
-        row_id=str(get("row_id") or ""),
-        source_table=config.table,
-        source_db=config.source_label,
-        nombre=nombre or None,
-        apellido_paterno=ap or None,
-        apellido_materno=am or None,
-        fecha_nacimiento=get("fecha_nacimiento"),
-        edad=edad,
-        genero=get("genero"),
-        direccion=get("direccion"),
-        municipio=get("municipio"),
-        seguro_social=get("seguro_social"),
-        raw_data=dict(raw),
+        row_id       = str(get("row_id") or ""),
+        source_table = config.table,
+        source_db    = config.source_label,
+        nombre       = nombre or None,
+        apellido_paterno = ap or None,
+        apellido_materno = am or None,
+        fecha_nacimiento = get("fecha_nacimiento"),
+        edad         = edad,
+        genero       = get("genero"),
+        direccion    = get("direccion"),
+        municipio    = get("municipio"),
+        seguro_social = get("seguro_social"),
+        telefono     = get("telefono"),
+        tipo_telefono = get("tipo_telefono"),
+        raw_data     = dict(raw),
     )
 
-    # Compute normalization and hash
     nombre_norm = " ".join(filter(None, [
         _normalize_text(record.nombre),
         _normalize_text(record.apellido_paterno),
@@ -242,5 +247,124 @@ def _raw_to_row_record(raw: dict[str, Any], config: DbScanConfig) -> RowRecord:
     ]))
     object.__setattr__(record, "nombre_normalizado", nombre_norm or None)
     object.__setattr__(record, "row_hash", _hash_row(record))
-
     return record
+
+
+# ── Main scan function ─────────────────────────────────────────────────────
+
+def scan_db_table(config: DbScanConfig) -> list[RowRecord]:
+    """
+    Scan a database table or CSV and return a list of RowRecord objects.
+
+    Supported: sqlite, mssql+pyodbc, mysql+pymysql, csv.
+    """
+    db_type = config.db_type
+    logger.info("Starting scan: backend=%s source=%s table=%s",
+                db_type, config.source_label, config.table)
+
+    field_map  = config.field_map
+    db_columns: list[str] = list(field_map.values())
+    if not db_columns:
+        raise ValueError("field_map is empty — provide at least one field mapping.")
+
+    records: list[RowRecord] = []
+    total_rows = 0
+    skipped    = 0
+
+    def _process(batches):
+        nonlocal total_rows, skipped
+        for batch in batches:
+            for raw in batch:
+                total_rows += 1
+                try:
+                    records.append(_raw_to_row_record(raw, config))
+                except Exception as exc:
+                    skipped += 1
+                    logger.warning("Skipping malformed row #%d: %s", total_rows, exc)
+
+    try:
+        if db_type == "sqlite":
+            raw_path = config.connection_string.split("sqlite:///", 1)[-1] or ":memory:"
+            _process(_iter_sqlite_batches(
+                raw_path, config.table, db_columns,
+                config.where_clause, config.batch_size,
+            ))
+
+        elif db_type == "csv":
+            csv_path = config.connection_string.split("csv:///", 1)[-1]
+            _process(_iter_csv_batches(csv_path, db_columns, config.batch_size))
+
+        elif db_type in ("mssql", "mysql"):
+            _process(_iter_sqlalchemy_batches(
+                config.connection_string, config.table, db_columns,
+                config.where_clause, config.batch_size,
+            ))
+
+        else:
+            raise NotImplementedError(
+                f"Backend '{db_type}' is not supported.\n"
+                f"Supported: sqlite, mssql+pyodbc, mysql+pymysql, csv"
+            )
+
+    except (sqlite3.OperationalError, Exception) as exc:
+        logger.error("Scan failed [%s / %s]: %s", config.source_label, config.table, exc)
+        raise
+
+    logger.info(
+        "Scan complete: backend=%s source=%s rows_read=%d skipped=%d records=%d",
+        db_type, config.source_label, total_rows, skipped, len(records),
+    )
+    return records
+
+
+# ── Connection string helpers ──────────────────────────────────────────────
+
+def mssql_connection_string(
+    server: str,
+    database: str,
+    username: str = "",
+    password: str = "",
+    driver: str = "ODBC Driver 18 for SQL Server",
+    trusted: bool = False,
+    trust_cert: bool = True,
+) -> str:
+    """
+    Build a SQL Server connection string for SQLAlchemy.
+
+    Examples:
+        # Windows Authentication (trusted connection)
+        mssql_connection_string("localhost", "AuditDB", trusted=True)
+
+        # SQL Server Authentication
+        mssql_connection_string("localhost\\SQLEXPRESS", "AuditDB", "sa", "pass")
+    """
+    import urllib.parse
+    driver_enc = urllib.parse.quote_plus(driver)
+    trust      = "yes" if trust_cert else "no"
+
+    if trusted:
+        return (
+            f"mssql+pyodbc:///?odbc_connect="
+            + urllib.parse.quote_plus(
+                f"Driver={{{driver}}};Server={server};Database={database};"
+                f"Trusted_Connection=yes;TrustServerCertificate={trust};"
+            )
+        )
+    return (
+        f"mssql+pyodbc:///?odbc_connect="
+        + urllib.parse.quote_plus(
+            f"Driver={{{driver}}};Server={server};Database={database};"
+            f"UID={username};PWD={password};TrustServerCertificate={trust};"
+        )
+    )
+
+
+def mysql_connection_string(
+    host: str,
+    database: str,
+    username: str,
+    password: str,
+    port: int = 3306,
+) -> str:
+    """Build a MySQL connection string for SQLAlchemy."""
+    return f"mysql+pymysql://{username}:{password}@{host}:{port}/{database}"

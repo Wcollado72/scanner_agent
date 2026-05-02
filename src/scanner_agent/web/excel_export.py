@@ -28,17 +28,29 @@ C_ANOMALY    = "e2e3e5"
 C_ACCENT     = "0d6efd"
 C_CITATION   = "fff8e1"
 
+C_CLUSTER    = "fce4d6"  # light orange for address clusters
+C_CROSS_RED  = "f5c6cb"  # cross-DB conflict / confirmed deceased
+C_CROSS_WARN = "ffeeba"  # cross-DB name mismatch
+
 FLAG_COLORS = {
-    "EXACT_DUPLICATE":   (C_EXACT,   "721c24"),
-    "NEAR_DUPLICATE":    (C_NEAR,    "664d03"),
-    "POSSIBLE_DECEASED": (C_DECEASED,"0c5460"),
-    "ANOMALY":           (C_ANOMALY, "41464b"),
+    "EXACT_DUPLICATE":          (C_EXACT,      "721c24"),
+    "NEAR_DUPLICATE":           (C_NEAR,       "664d03"),
+    "POSSIBLE_DECEASED":        (C_DECEASED,   "0c5460"),
+    "ANOMALY":                  (C_ANOMALY,    "41464b"),
+    "ADDRESS_CLUSTER":          (C_CLUSTER,    "843b00"),
+    "CONFIRMED_DECEASED":       (C_CROSS_RED,  "721c24"),
+    "NAME_MISMATCH_CROSS_DB":   (C_CROSS_WARN, "664d03"),
+    "SSN_CROSS_DB_CONFLICT":    (C_CROSS_RED,  "58151a"),
 }
 FLAG_LABELS = {
-    "EXACT_DUPLICATE":   "Duplicado Exacto",
-    "NEAR_DUPLICATE":    "Duplicado Aprox.",
-    "POSSIBLE_DECEASED": "Pos. Fallecido",
-    "ANOMALY":           "Anomalia",
+    "EXACT_DUPLICATE":          "Duplicado Exacto",
+    "NEAR_DUPLICATE":           "Duplicado Aprox.",
+    "POSSIBLE_DECEASED":        "Pos. Fallecido",
+    "ANOMALY":                  "Anomalia",
+    "ADDRESS_CLUSTER":          "Conc. Direccion",
+    "CONFIRMED_DECEASED":       "Fallecido Conf.",
+    "NAME_MISMATCH_CROSS_DB":   "Incons. Nombre",
+    "SSN_CROSS_DB_CONFLICT":    "Conflicto SSN",
 }
 STATUS_COLORS = {
     "confirmed": (C_CONFIRMED,  C_CONFIRMED_T),
@@ -289,31 +301,31 @@ def _sheet_municipios(wb, findings, reviews):
     # Build per-municipio stats from findings
     from collections import defaultdict
     stats = defaultdict(lambda: {"EXACT_DUPLICATE":0,"NEAR_DUPLICATE":0,
-                                  "POSSIBLE_DECEASED":0,"ANOMALY":0})
+                                  "POSSIBLE_DECEASED":0,"ANOMALY":0,"ADDRESS_CLUSTER":0})
     reviews_by_idx = reviews or {}
     for i, f in enumerate(findings):
         muns = {r.get("municipio","") for r in f.get("records",[]) if r.get("municipio")}
         for mun in muns:
             stats[mun][f["flag"]] = stats[mun].get(f["flag"],0) + 1
 
-    headers = ["Municipio","Exactos","Near-Dup","Pos. Fallecido","Anomalias","Total"]
+    headers = ["Municipio","Exactos","Near-Dup","Conc. Dir.","Pos. Fallecido","Anomalias","Total"]
     for col, h in enumerate(headers, 1):
         _hdr(ws, 1, col, h)
     ws.row_dimensions[1].height = 18
 
-    sorted_muns = sorted(stats.items(), key=lambda x: -(
-        x[1]["EXACT_DUPLICATE"]+x[1]["NEAR_DUPLICATE"]+x[1]["POSSIBLE_DECEASED"]+x[1]["ANOMALY"]
-    ))
+    _FLAG_ORDER = ["EXACT_DUPLICATE","NEAR_DUPLICATE","ADDRESS_CLUSTER","POSSIBLE_DECEASED","ANOMALY"]
+
+    sorted_muns = sorted(stats.items(), key=lambda x: -sum(x[1].get(f,0) for f in _FLAG_ORDER))
 
     for row, (mun, cnts) in enumerate(sorted_muns, 2):
-        total = cnts["EXACT_DUPLICATE"]+cnts["NEAR_DUPLICATE"]+cnts["POSSIBLE_DECEASED"]+cnts["ANOMALY"]
+        total = sum(cnts.get(f,0) for f in _FLAG_ORDER)
         # Intensity: darker background for more findings
         intensity = min(255, 255 - int(total / max(1, len(sorted_muns)) * 80))
         row_bg = f"{intensity:02X}{intensity:02X}FF" if total > 0 else "FFFFFF"
         vals = [mun, cnts["EXACT_DUPLICATE"], cnts["NEAR_DUPLICATE"],
-                cnts["POSSIBLE_DECEASED"], cnts["ANOMALY"], total]
+                cnts["ADDRESS_CLUSTER"], cnts["POSSIBLE_DECEASED"], cnts["ANOMALY"], total]
         for col, v in enumerate(vals, 1):
-            bold = col == 1 or col == 6
+            bold = col == 1 or col == 7
             align = "left" if col == 1 else "center"
             _cell(ws, row, col, v, bg=row_bg if col > 1 else None, bold=bold, align=align)
         ws.row_dimensions[row].height = 15
@@ -321,14 +333,14 @@ def _sheet_municipios(wb, findings, reviews):
     # Totals
     last = len(sorted_muns) + 1
     _cell(ws, last+1, 1, "TOTAL", bold=True, bg="f0f0f0", align="center")
-    for col in range(2, 7):
+    for col in range(2, 8):
         ws.cell(row=last+1, column=col).value = f"=SUM({get_column_letter(col)}2:{get_column_letter(col)}{last})"
         ws.cell(row=last+1, column=col).font = Font(name="Arial", bold=True, size=9)
         ws.cell(row=last+1, column=col).fill = PatternFill("solid", fgColor="f0f0f0")
         ws.cell(row=last+1, column=col).alignment = Alignment(horizontal="center")
         ws.cell(row=last+1, column=col).border = _border
 
-    _set_col_widths(ws, [22, 9, 10, 15, 11, 8])
+    _set_col_widths(ws, [22, 9, 10, 11, 15, 11, 8])
     _freeze(ws, "A2")
 
 # ── Public entry point ─────────────────────────────────────────────────────
