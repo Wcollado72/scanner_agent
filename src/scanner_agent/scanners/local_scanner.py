@@ -18,7 +18,7 @@ def scan_local_paths(paths: list[Path]) -> list[FileRecord]:
         for path in root_path.rglob("*"):
             if path.is_dir():
                 continue
-            if is_excluded_path(path):
+            if is_excluded_path(path, scan_root=root_path):
                 continue
             if is_excluded_file(path):
                 continue

@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}Hallazgo #{{ idx + 1 }}{% endblock %}
+{% block content %}
+
+<!-- Breadcrumb + prev/next -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb mb-0 small">
+      <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+      <li class="breadcrumb-item active">Hallazgo #{{ idx + 1 }} de {{ total }}</li>
+    </ol>
+  </nav>
+  <div class="btn-group btn-group-sm">
+    {% if idx > 0 %}
+      <a href="{{ url_for('finding', idx=idx-1) }}" class="btn btn-outline-secondary">
+        <i class="bi bi-chevron-left"></i> Anterior
+      </a>
+    {% endif %}
+    {% if idx < total - 1 %}
+      <a href="{{ url_for('finding', idx=idx+1) }}" class="btn btn-outline-secondary">
+        Siguiente <i class="bi bi-chevron-right"></i>
+      </a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-4">
+
+  <!-- ── Left: records ──────────────────────────────────────────────── -->
+  <div class="col-lg-8">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white d-flex flex-wrap align-items-center gap-2 py-3">
+        <span class="badge flag-{{ finding.flag }} fs-6 rounded-pill">{{ flag_label }}</span>
+        <span class="text-muted small">
+          {{ finding.strategy }} &mdash; {{ "%.0f"|format(finding.confidence * 100) }}% confianza
+        </span>
+        <span class="ms-auto">
+          {% if status == 'confirmed' %}
+            <span class="badge status-pill-confirmed px-3 py-2 rounded-pill">
+              <i class="bi bi-check-circle-fill me-1"></i>Confirmado
+            </span>
+          {% elif status == 'rejected' %}
+            <span class="badge status-pill-rejected px-3 py-2 rounded-pill">
+              <i class="bi bi-x-circle-fill me-1"></i>Rechazado
+            </span>
+          {% else %}
+            <span class="badge status-pill-pending px-3 py-2 rounded-pill">
+              <i class="bi bi-hourglass me-1"></i>Pendiente
+            </span>
+          {% endif %}
+        </span>
+      </div>
+      {% if finding.notes %}
+      <div class="card-body py-2 border-bottom bg-light">
+        <small class="text-muted"><i class="bi bi-info-circle me-1"></i>{{ finding.notes }}</small>
+      </div>
+      {% endif %}
+
+      <div class="card-body">
+        <div class="row g-3">
+          {% for r in records %}
+          <div class="col-md-6">
+            <div class="card record-card h-100 {% if r._deleted %}is-deleted{% endif %}">
+              <div class="card-header bg-light d-flex justify-content-between py-2">
+                <span class="fw-semibold small">
+                  Registro {{ loop.index }}
+                  {% if r._deleted %}<span class="badge bg-danger ms-1 small">Para eliminacion</span>{% endif %}
+                </span>
+                <span class="text-muted small">ID: {{ r.get('row_id', '—') }}</span>
+              </div>
+              <div class="card-body p-3">
+                <table class="table table-sm table-borderless mb-0 small">
+                  <tbody>
+                    {% for label, key in [
+                      ('Nombre','nombre_completo'),('Fecha nac.','fecha_nacimiento'),
+                      ('Edad','edad'),('Municipio','municipio'),
+                      ('Direccion','direccion'),('Seg. Social','seguro_social'),
+                      ('Fuente DB','source_db')
+                    ] %}
+                    <tr>
+                      <td class="text-muted pe-2" style="width:38%;white-space:nowrap">{{ label }}</td>
+                      <td class="fw-semibold">{{ r.get(key) or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="table-light">
+                      <td class="text-muted pe-2" style="white-space:nowrap">
+                        <i class="bi bi-telephone me-1"></i>Telefono
+                      </td>
+                      <td class="fw-semibold">
+                        {% if r.get('telefono') %}
+                          {{ r.telefono }}
+                          {% if r.get('tipo_telefono') %}
+                            <span class="badge bg-light text-secondary border ms-1">{{ r.tipo_telefono }}</span>
+                          {% endif %}
+                        {% else %}
+                          <span class="text-muted">—</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                {% if role == 'admin' and not r._deleted %}
+                <div class="mt-3">
+                  <button class="btn btn-sm btn-outline-secondary w-100" type="button"
+                          data-bs-toggle="collapse" data-bs-target="#edit-rec-{{ loop.index0 }}">
+                    <i class="bi bi-pencil me-1"></i>Editar registro
+                  </button>
+                  <div class="collapse mt-3" id="edit-rec-{{ loop.index0 }}">
+                    <form method="POST" action="{{ url_for('edit_record', idx=idx, rec_idx=loop.index0) }}">
+                      <div class="mb-2">
+                        <label class="form-label small fw-semibold mb-1">Nombre completo</label>
+                        <input type="text" name="nombre_completo" class="form-control form-control-sm"
+                               value="{{ r.get('nombre_completo','') }}">
+                      </div>
+                      <div class="row g-2 mb-2">
+                        <div class="col-7">
+                          <label class="form-label small fw-semibold mb-1">Telefono</label>
+                          <input type="text" name="telefono" class="form-control form-control-sm"
+                                 placeholder="787-000-0000" value="{{ r.get('telefono','') }}">
+                        </div>
+                        <div class="col-5">
+                          <label class="form-label small fw-semibold mb-1">Tipo</label>
+                          <select name="tipo_telefono" class="form-select form-select-sm">
+                            <option value="">—</option>
+                            {% for opt in ['Movil','Residencia','Trabajo'] %}
+                            <option value="{{ opt }}" {% if r.get('tipo_telefono')==opt %}selected{% endif %}>{{ opt }}</option>
+                            {% endfor %}
+                          </select>
+                        </div>
+                      </div>
+                      <div class="mb-2">
+                        <label class="form-label small fw-semibold mb-1">Direccion</label>
+                        <input type="text" name="direccion" class="form-control form-control-sm"
+                               value="{{ r.get('direccion','') }}">
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Municipio</label>
+                        <input type="text" name="municipio" class="form-control form-control-sm"
+                               value="{{ r.get('municipio','') }}">
+                      </div>
+                      <button type="submit" class="btn btn-sm btn-dark w-100">
+                        <i class="bi bi-save me-1"></i>Guardar cambios
+                      </button>
+                    </form>
+                    <hr class="my-3">
+                    <form method="POST" action="{{ url_for('delete_record', idx=idx, rec_idx=loop.index0) }}"
+                          onsubmit="return confirm('Confirmas marcar este registro para eliminacion?')">
+                      <input type="text" name="notes" class="form-control form-control-sm border-danger mb-2"
+                             placeholder="Motivo de eliminacion...">
+                      <button type="submit" class="btn btn-sm btn-outline-danger w-100">
+                        <i class="bi bi-trash me-1"></i>Marcar para eliminacion
+                      </button>
+                    </form>
+                  </div>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div><!-- /findings card -->
+  </div><!-- /col-lg-8 -->
+
+
+  <!-- ── Right: action panel ────────────────────────────────────────── -->
+  <div class="col-lg-4">
+    <div class="action-panel">
+
+      <!-- Decision: confirm / reject -->
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-header bg-white fw-semibold py-3">
+          <i class="bi bi-check2-square me-1"></i>Decision
+        </div>
+        <div class="card-body">
+          <form method="POST" action="{{ url_for('confirm_finding', idx=idx) }}" class="mb-3">
+            <textarea name="notes" class="form-control form-control-sm mb-2" rows="2"
+                      placeholder="Notas (opcional)"></textarea>
+            <button type="submit" class="btn btn-success w-100">
+              <i class="bi bi-check-circle me-1"></i>Confirmar duplicado
+            </button>
+          </form>
+          <form method="POST" action="{{ url_for('reject_finding', idx=idx) }}">
+            <textarea name="notes" class="form-control form-control-sm mb-2" rows="2"
+                      placeholder="Motivo del rechazo (opcional)"></textarea>
+            <button type="submit" class="btn btn-outline-primary w-100">
+              <i class="bi bi-x-circle me-1"></i>Rechazar (falso positivo)
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Contact / Citation panel — only for flags that need follow-up -->
+      {% if needs_contact %}
+      <div class="card border-0 shadow-sm mb-3 border-start border-4 border-warning">
+        <div class="card-header bg-white fw-semibold py-3">
+          <i class="bi bi-person-lines-fill me-1 text-warning"></i>Gestiones de Contacto
+        </div>
+        <div class="card-body p-0">
+          <ul class="nav nav-tabs nav-fill px-3 pt-2" id="contactTab" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active small" id="call-tab"
+                      data-bs-toggle="tab" data-bs-target="#callPane"
+                      type="button" role="tab">
+                <i class="bi bi-telephone me-1"></i>Llamada
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link small" id="cite-tab"
+                      data-bs-toggle="tab" data-bs-target="#citePane"
+                      type="button" role="tab">
+                <i class="bi bi-envelope-paper me-1"></i>Citacion
+              </button>
+            </li>
+          </ul>
+
+          <div class="tab-content p-3" id="contactTabContent">
+
+            <!-- Tab: Llamada -->
+            <div class="tab-pane fade show active" id="callPane" role="tabpanel">
+              <form method="POST" action="{{ url_for('log_contact', idx=idx) }}">
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">Registro contactado</label>
+                  <select name="record_idx" class="form-select form-select-sm">
+                    {% for r in records %}
+                    <option value="{{ loop.index0 }}">
+                      Reg. {{ loop.index }} — {{ r.get('nombre_completo','')[:30] }}
+                      {% if r.get('telefono') %} ({{ r.telefono }}){% endif %}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">Resultado</label>
+                  <select name="resultado" class="form-select form-select-sm" required>
+                    <option value="">— Selecciona —</option>
+                    <option value="Contesto">Contesto</option>
+                    <option value="No contesto">No contesto</option>
+                    <option value="Buzon de voz">Buzon de voz</option>
+                    <option value="Numero incorrecto">Numero incorrecto</option>
+                    <option value="Numero no existe">Numero no existe</option>
+                  </select>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label small fw-semibold mb-1">Notas</label>
+                  <textarea name="notas" class="form-control form-control-sm" rows="2"
+                            placeholder="Que se le comunico, compromisos, etc."></textarea>
+                </div>
+                <button type="submit" class="btn btn-sm btn-warning w-100 fw-semibold">
+                  <i class="bi bi-telephone-outbound me-1"></i>Registrar llamada
+                </button>
+              </form>
+            </div>
+
+            <!-- Tab: Citacion -->
+            <div class="tab-pane fade" id="citePane" role="tabpanel">
+              <form method="POST" action="{{ url_for('log_citation', idx=idx) }}">
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">Registro a citar</label>
+                  <select name="record_idx" class="form-select form-select-sm">
+                    {% for r in records %}
+                    <option value="{{ loop.index0 }}">
+                      Reg. {{ loop.index }} — {{ r.get('nombre_completo','')[:30] }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="row g-2 mb-2">
+                  <div class="col-7">
+                    <label class="form-label small fw-semibold mb-1">Fecha</label>
+                    <input type="date" name="fecha_cita" class="form-control form-control-sm" required>
+                  </div>
+                  <div class="col-5">
+                    <label class="form-label small fw-semibold mb-1">Hora</label>
+                    <input type="time" name="hora_cita" class="form-control form-control-sm" value="09:00">
+                  </div>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">Lugar</label>
+                  <input type="text" name="lugar" class="form-control form-control-sm"
+                         placeholder="Ej: Oficina CEE, San Juan">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small fw-semibold mb-1">Motivo</label>
+                  <textarea name="motivo" class="form-control form-control-sm" rows="2"
+                            placeholder="Razon de la citacion...">{{ "Verificacion de identidad por " + flag_label | lower }}</textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label small fw-semibold mb-1">Documentos requeridos</label>
+                  <textarea name="documentos" class="form-control form-control-sm" rows="3">{{ default_docs }}</textarea>
+                </div>
+                <button type="submit" class="btn btn-sm btn-dark w-100 fw-semibold">
+                  <i class="bi bi-envelope-paper me-1"></i>Registrar citacion
+                </button>
+              </form>
+            </div>
+
+          </div><!-- /tab-content -->
+        </div>
+      </div><!-- /contact card -->
+
+      <!-- Contact history -->
+      {% if contacts %}
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-header bg-white fw-semibold py-3">
+          <i class="bi bi-journal-text me-1"></i>Historial de contacto
+          <span class="badge bg-secondary ms-1">{{ contacts|length }}</span>
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for c in contacts | reverse %}
+          <li class="list-group-item py-2">
+            <div class="d-flex justify-content-between align-items-start">
+              {% if c.type == 'citacion' %}
+                <span class="badge bg-dark small"><i class="bi bi-envelope-paper me-1"></i>Citacion</span>
+              {% else %}
+                <span class="badge bg-warning text-dark small"><i class="bi bi-telephone me-1"></i>Llamada</span>
+              {% endif %}
+              <span class="history-ts text-muted">{{ c.timestamp[:10] }}</span>
+            </div>
+            {% if c.type == 'llamada' %}
+              <div class="small mt-1 fw-semibold">{{ c.resultado }}</div>
+              {% if c.notas %}<div class="small text-muted">{{ c.notas }}</div>{% endif %}
+            {% else %}
+              <div class="small mt-1 fw-semibold">{{ c.nombre }}</div>
+              <div class="small text-muted">
+                {{ c.fecha_cita }} {{ c.hora_cita }}{% if c.lugar %} — {{ c.lugar }}{% endif %}
+              </div>
+              {% if c.documentos %}
+              <div class="small text-muted mt-1">
+                <i class="bi bi-file-earmark-text me-1"></i>{{ c.documentos[:60] }}{% if c.documentos|length > 60 %}...{% endif %}
+              </div>
+              {% endif %}
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% endif %}<!-- /needs_contact -->
+
+      <!-- Action history -->
+      {% if history %}
+      <div class="card border-0 shadow-sm">
+        <div class="card-header bg-white fw-semibold py-3">
+          <i class="bi bi-clock-history me-1"></i>Historial de acciones
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for entry in history | reverse %}
+          <li class="list-group-item py-2">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="badge bg-secondary small text-uppercase">{{ entry.action }}</span>
+              <span class="history-ts text-muted">{{ entry.timestamp[:19].replace('T',' ') }}</span>
+            </div>
+            <div class="small text-muted mt-1">
+              <i class="bi bi-person me-1"></i>{{ entry.role }}
+              {% if entry.notes %}&mdash; {{ entry.notes }}{% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+    </div><!-- /action-panel -->
+  </div><!-- /col-lg-4 -->
+
+</div><!-- /row -->
+{% endblock %}

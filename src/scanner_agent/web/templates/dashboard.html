@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+
+<!-- Report header -->
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h5 class="fw-bold mb-0">
+      <i class="bi bi-clipboard-data me-1"></i>
+      Auditoria: {{ meta.get('source', 'N/A') }}
+      {% if meta.get('table') %} &mdash; {{ meta.get('table') }}{% endif %}
+    </h5>
+    <small class="text-muted">
+      Escaneado: {{ meta.get('scan_timestamp', '')[:19].replace('T', ' ') }} UTC
+      &nbsp;&bull;&nbsp;
+      {{ meta.get('total_rows_scanned', meta.get('total_files_scanned', '?')) }} registros
+    </small>
+  </div>
+  <a href="{{ url_for('export_excel') }}" class="btn btn-sm btn-outline-success">
+    <i class="bi bi-file-earmark-excel me-1"></i>Exportar Excel
+  </a>
+</div>
+
+<!-- Summary cards -->
+<div class="row g-3 mb-4">
+  {% set card_data = [
+    (counts.total,     'Total hallazgos', 'dark',      'bi-list-task'),
+    (counts.pending,   'Pendientes',      'secondary',  'bi-hourglass-split'),
+    (counts.confirmed, 'Confirmados',     'success',    'bi-check-circle-fill'),
+    (counts.rejected,  'Rechazados',      'primary',    'bi-x-circle-fill'),
+  ] %}
+  {% for val, lbl, color, icon in card_data %}
+  <div class="col-6 col-md-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body text-center py-3">
+        <i class="bi {{ icon }} text-{{ color }} fs-4"></i>
+        <div class="fs-2 fw-bold mt-1 text-{{ color }}">{{ val }}</div>
+        <div class="text-muted small">{{ lbl }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Filters -->
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-body py-2">
+    <form method="GET" class="row g-2 align-items-center">
+      <div class="col-auto">
+        <label class="form-label small fw-semibold mb-0 me-1">Tipo</label>
+        <select name="flag" class="form-select form-select-sm d-inline-block" style="width:auto">
+          <option value="">Todos</option>
+          {% for flag, (color, label) in FLAG_META.items() %}
+            <option value="{{ flag }}" {% if flag_filter == flag %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label small fw-semibold mb-0 me-1">Estado</label>
+        <select name="status" class="form-select form-select-sm d-inline-block" style="width:auto">
+          <option value="">Todos</option>
+          <option value="pending"   {% if status_filter == 'pending'   %}selected{% endif %}>Pendiente</option>
+          <option value="confirmed" {% if status_filter == 'confirmed' %}selected{% endif %}>Confirmado</option>
+          <option value="rejected"  {% if status_filter == 'rejected'  %}selected{% endif %}>Rechazado</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-dark">
+          <i class="bi bi-funnel-fill me-1"></i>Filtrar
+        </button>
+        {% if flag_filter or status_filter %}
+        <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">
+          <i class="bi bi-x"></i>Limpiar
+        </a>
+        {% endif %}
+      </div>
+      <div class="col-auto ms-auto text-muted small">
+        Mostrando {{ rows|length }} de {{ counts.total }} hallazgos
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Findings table -->
+<div class="card border-0 shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0 findings-table">
+        <thead class="table-dark">
+          <tr>
+            <th class="ps-3">#</th>
+            <th>Tipo</th>
+            <th>Estrategia</th>
+            <th>Confianza</th>
+            <th class="text-center">Regs.</th>
+            <th>Nombres</th>
+            <th>Estado</th>
+            <th class="text-center">Contactos</th>
+            <th class="pe-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td class="ps-3 text-muted">{{ row.idx + 1 }}</td>
+            <td>
+              <span class="badge flag-{{ row.flag }} rounded-pill">{{ row.flag_label }}</span>
+            </td>
+            <td class="text-muted small">{{ row.strategy }}</td>
+            <td style="min-width:80px">
+              <div class="progress mb-1" style="height:5px">
+                <div class="progress-bar bg-{{ row.flag_color }}" style="width:{{ row.confidence }}"></div>
+              </div>
+              <span class="small text-muted">{{ row.confidence }}</span>
+            </td>
+            <td class="text-center">{{ row.record_count }}</td>
+            <td class="small text-truncate" style="max-width:240px">{{ row.names }}</td>
+            <td>
+              {% if row.status == 'confirmed' %}
+                <span class="badge status-pill-confirmed rounded-pill px-2 py-1">
+                  <i class="bi bi-check-circle me-1"></i>Confirmado
+                </span>
+              {% elif row.status == 'rejected' %}
+                <span class="badge status-pill-rejected rounded-pill px-2 py-1">
+                  <i class="bi bi-x-circle me-1"></i>Rechazado
+                </span>
+              {% else %}
+                <span class="badge status-pill-pending rounded-pill px-2 py-1">
+                  <i class="bi bi-hourglass me-1"></i>Pendiente
+                </span>
+              {% endif %}
+            </td>
+            <td class="text-center">
+              {% if row.contact_count > 0 %}
+                <span class="badge bg-warning text-dark rounded-pill">
+                  <i class="bi bi-telephone me-1"></i>{{ row.contact_count }}
+                </span>
+              {% else %}
+                <span class="text-muted small">—</span>
+              {% endif %}
+            </td>
+            <td class="pe-3">
+              <a href="{{ url_for('finding', idx=row.idx) }}" class="btn btn-sm btn-outline-dark">
+                <i class="bi bi-eye me-1"></i>Revisar
+              </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="text-center text-muted py-5">
+              <i class="bi bi-search fs-2 d-block mb-2 opacity-50"></i>
+              No se encontraron hallazgos con los filtros aplicados.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

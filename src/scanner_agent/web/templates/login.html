@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Iniciar Sesion{% endblock %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-sm-10 col-md-6 col-lg-4">
+    <div class="card shadow border-0">
+      <div class="card-body p-5">
+        <div class="text-center mb-4">
+          <i class="bi bi-shield-lock-fill text-dark" style="font-size:3rem"></i>
+          <h4 class="mt-3 fw-bold">Scanner Agent</h4>
+          <p class="text-muted mb-0">Panel de Revision de Auditoria</p>
+        </div>
+
+        {% if error %}
+          <div class="alert alert-danger d-flex align-items-center py-2 small" role="alert">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            {{ error }}
+          </div>
+        {% endif %}
+
+        <form method="POST">
+          <div class="mb-4">
+            <label for="pwd" class="form-label fw-semibold">Contrasena</label>
+            <input id="pwd" type="password" name="password" class="form-control form-control-lg"
+                   placeholder="Ingresa tu contrasena" autofocus required>
+            <div class="form-text mt-2">
+              <i class="bi bi-info-circle me-1"></i>
+              El sistema detecta tu rol automaticamente (Revisor o Administrador).
+            </div>
+          </div>
+          <button type="submit" class="btn btn-dark btn-lg w-100">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Entrar
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

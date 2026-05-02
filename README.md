@@ -105,7 +105,7 @@ A typical scan would look like:
 ```bash
 # From the project root
 python -m scanner_agent \
-  --root-path "C:\path\to\scan" \
+  --path "C:\path\to\scan" \
   --output-dir ".\reports"
 ```
 
