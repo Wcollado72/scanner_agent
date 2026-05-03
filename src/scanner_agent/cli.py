@@ -19,9 +19,9 @@ from scanner_agent.scanners.local_scanner import scan_local_paths
 
 logger = logging.getLogger(__name__)
 
-CLI_VERSION = "0.6.0"
+CLI_VERSION = "0.8.0"
 
-SUPPORTED_SCANNERS = ("local", "db", "cross-db", "serve")
+SUPPORTED_SCANNERS = ("local", "db", "cross-db", "pipeline", "serve")
 
 # ── Rich import (optional — degrades gracefully if not installed) ──────────
 try:
@@ -113,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="[serve] Path to matriz_certificada.db. Created automatically if absent. "
              "Example: --matriz reports/matriz_certificada.db",
+    )
+    parser.add_argument(
+        "--staging",
+        default="",
+        help="[pipeline] Path to rd_cee_depurado.db (intermediate staging DB). "
+             "Default: reports/rd_cee_depurado.db",
     )
     # Shared options
     parser.add_argument(
@@ -278,6 +284,286 @@ def _print_rich_db(source, table, total_rows, match_groups, flag_counts,
             )
         console.print(ft)
     console.print()
+
+
+# ── Pipeline (4-phase depuration) ─────────────────────────────────────────
+
+def _run_pipeline(args, output_dir: Path, scan_started_at, start_time: float) -> None:
+    """
+    Orquesta el pipeline completo de depuración en 4 fases:
+
+      Fase 1 — Depuración interna RD (Registro Demográfico)
+      Fase 2 — Depuración interna CEE (padrón electoral)
+      Fase 3 — Cruce RD × CEE (registros limpios de las fases 1+2)
+      Fase 4 — Cruce staging × CESCO (validación final con Real ID)
+
+    Requiere --source con aliases RD, CEE, y CESCO.
+    Produce 4 reportes JSON + rd_cee_depurado.db (staging).
+    """
+    import json as _json
+    import time as _time
+    from collections import Counter as _Counter
+    from scanner_agent.scanners.db_scanner import scan_db_table, DbScanConfig
+    from scanner_agent.detection.record_matcher import run_full_match
+    from scanner_agent.detection.cross_db_matcher import run_cross_db_match
+    from scanner_agent.detection.clean_exporter import (
+        get_flagged_ids, export_clean_records,
+        load_staging_records, get_staging_stats,
+    )
+
+    if not args.sources:
+        print(
+            "[ERROR] --source es requerido para --scanner pipeline.\n"
+            "  Se requieren aliases RD, CEE y CESCO:\n"
+            "    --source RD:sqlite:///tests/data/mock_rd.db:defunciones\n"
+            "    --source CEE:sqlite:///tests/data/mock_cee.db:electores\n"
+            "    --source CESCO:sqlite:///tests/data/mock_cesco.db:documentos",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # ── Parsear sources ────────────────────────────────────────────────────
+    FIELD_MAPS = {
+        "CEE": {
+            "row_id": "num_elector", "nombre": "nombre",
+            "apellido_paterno": "apellido_paterno", "apellido_materno": "apellido_materno",
+            "fecha_nacimiento": "fecha_nacimiento", "edad": "edad", "genero": "genero",
+            "direccion": "direccion", "municipio": "municipio",
+            "seguro_social": "seguro_social", "telefono": "telefono",
+            "tipo_telefono": "tipo_telefono",
+        },
+        "RD": {
+            "row_id": "cert_num", "nombre": "nombre",
+            "apellido_paterno": "apellido_paterno", "apellido_materno": "apellido_materno",
+            "fecha_nacimiento": "fecha_nacimiento", "seguro_social": "seguro_social",
+            "municipio": "municipio_res",
+        },
+        "CESCO": {
+            "row_id": "doc_num", "nombre": "nombre",
+            "apellido_paterno": "apellido_paterno", "apellido_materno": "apellido_materno",
+            "fecha_nacimiento": "fecha_nacimiento", "genero": "genero",
+            "direccion": "direccion", "municipio": "municipio",
+            "seguro_social": "seguro_social", "telefono": "telefono",
+        },
+    }
+
+    source_map: dict[str, tuple[str, str]] = {}   # alias → (conn_str, table)
+    for spec in args.sources:
+        parts = spec.split(":", 1)
+        if len(parts) < 2:
+            print(f"[ERROR] Formato inválido: {spec!r}", file=sys.stderr); sys.exit(1)
+        alias = parts[0].upper()
+        rest_parts = parts[1].rsplit(":", 1)
+        if len(rest_parts) < 2:
+            print(f"[ERROR] Falta tabla en: {spec!r}", file=sys.stderr); sys.exit(1)
+        source_map[alias] = (rest_parts[0], rest_parts[1])
+
+    for required in ("RD", "CEE", "CESCO"):
+        if required not in source_map:
+            print(f"[ERROR] Falta --source {required}:...", file=sys.stderr); sys.exit(1)
+
+    staging_path = Path(args.staging).expanduser().resolve() if args.staging \
+        else output_dir / "rd_cee_depurado.db"
+
+    sep = "─" * 60
+    print(f"\n{sep}")
+    print("  scanner_agent — Pipeline de Depuración (4 fases)")
+    print(f"  Staging     : {staging_path}")
+    print(f"  Reportes    : {output_dir}/")
+    print(f"{sep}\n")
+
+    all_reports: list[dict] = []
+
+    def _load(alias: str) -> list:
+        conn_str, table = source_map[alias]
+        cfg = DbScanConfig(
+            connection_string=conn_str, table=table,
+            field_map=FIELD_MAPS.get(alias, {}), source_alias=alias,
+        )
+        return scan_db_table(cfg)
+
+    def _scan_and_export(alias: str, phase: int, fase_label: str) -> tuple[list, list]:
+        """Scan internally, write report, export clean records. Returns (records, findings)."""
+        t0 = _time.perf_counter()
+        records = _load(alias)
+        match_groups = run_full_match(records)
+        elapsed = _time.perf_counter() - t0
+
+        findings_dicts = [
+            {
+                "flag": g.flag, "strategy": g.strategy,
+                "confidence": g.confidence, "notes": g.notes,
+                "records": [
+                    {"row_id": r.row_id, "nombre_completo": r.nombre_completo,
+                     "fecha_nacimiento": r.fecha_nacimiento, "municipio": r.municipio,
+                     "direccion": r.direccion, "seguro_social": r.seguro_social,
+                     "telefono": r.telefono, "source_db": r.source_db}
+                    for r in g.records
+                ],
+            }
+            for g in match_groups
+        ]
+
+        fc = _Counter(g.flag for g in match_groups)
+        scan_meta = {
+            "scan_timestamp": scan_started_at.isoformat(),
+            "pipeline_phase": phase, "fase_label": fase_label,
+            "source": alias, "table": source_map[alias][1],
+            "scanner": "pipeline",
+            "total_rows_scanned": len(records),
+            "exact_duplicate_groups": fc.get("EXACT_DUPLICATE", 0),
+            "near_duplicate_pairs": fc.get("NEAR_DUPLICATE", 0),
+            "address_clusters": fc.get("ADDRESS_CLUSTER", 0),
+            "possible_deceased": fc.get("POSSIBLE_DECEASED", 0),
+            "anomalies": fc.get("ANOMALY", 0),
+            "duration_seconds": round(elapsed, 3),
+        }
+        report_path = output_dir / f"pipeline_fase{phase}_{alias.lower()}.json"
+        report_path.write_text(
+            _json.dumps({"meta": scan_meta, "findings": findings_dicts},
+                        indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        flagged = get_flagged_ids(findings_dicts)
+        stats = export_clean_records(
+            records=records, flagged_ids=flagged,
+            dest_db_path=staging_path,
+            source_alias=alias, phase=phase, fase_label=fase_label,
+        )
+
+        print(f"  Fase {phase} — {fase_label}")
+        print(f"    {alias}: {len(records)} registros | {len(match_groups)} hallazgos | "
+              f"{stats['exported']} exportados al staging | {stats['skipped_flagged']} con flags")
+        print(f"    Reporte: {report_path.name}")
+        all_reports.append(report_path)
+        return records, findings_dicts
+
+    # ── FASE 1: Depuración interna RD ──────────────────────────────────────
+    print(f"{sep}")
+    _, _ = _scan_and_export("RD", phase=1,
+                            fase_label="Depuracion interna Registro Demografico")
+
+    # ── FASE 2: Depuración interna CEE ─────────────────────────────────────
+    print()
+    _, _ = _scan_and_export("CEE", phase=2,
+                            fase_label="Depuracion interna CEE padron electoral")
+
+    # ── FASE 3: Cruce RD × CEE desde staging ──────────────────────────────
+    print()
+    print(f"  Fase 3 — Cruce RD x CEE (registros limpios del staging)")
+    t0 = _time.perf_counter()
+    rd_clean  = load_staging_records(staging_path, source_filter="RD")
+    cee_clean = load_staging_records(staging_path, source_filter="CEE")
+
+    cross_findings = run_cross_db_match({"CEE": cee_clean, "RD": rd_clean})
+    elapsed3 = _time.perf_counter() - t0
+
+    fc3 = _Counter(f.flag for f in cross_findings)
+    cross_findings_dicts = [
+        {
+            "flag": f.flag, "strategy": f.strategy,
+            "confidence": f.confidence, "notes": f.notes,
+            "records": [
+                {"row_id": r.row_id, "nombre_completo": r.nombre_completo,
+                 "fecha_nacimiento": r.fecha_nacimiento, "municipio": r.municipio,
+                 "seguro_social": r.seguro_social, "source_db": r.source_db}
+                for r in f.records
+            ],
+        }
+        for f in cross_findings
+    ]
+    meta3 = {
+        "scan_timestamp": scan_started_at.isoformat(),
+        "pipeline_phase": 3, "fase_label": "Cruce RD x CEE",
+        "scanner": "pipeline",
+        "rd_clean_records": len(rd_clean),
+        "cee_clean_records": len(cee_clean),
+        "confirmed_deceased": fc3.get("CONFIRMED_DECEASED", 0),
+        "ssn_conflicts": fc3.get("SSN_CROSS_DB_CONFLICT", 0),
+        "total_findings": len(cross_findings),
+        "duration_seconds": round(elapsed3, 3),
+    }
+    report3 = output_dir / "pipeline_fase3_rdcee_cross.json"
+    report3.write_text(
+        _json.dumps({"meta": meta3, "findings": cross_findings_dicts},
+                    indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"    RD limpio: {len(rd_clean)} | CEE limpio: {len(cee_clean)} | "
+          f"hallazgos cruce: {len(cross_findings)}")
+    print(f"    CONFIRMED_DECEASED: {fc3.get('CONFIRMED_DECEASED',0)} | "
+          f"SSN_CONFLICT: {fc3.get('SSN_CROSS_DB_CONFLICT',0)}")
+    print(f"    Reporte: {report3.name}")
+    all_reports.append(report3)
+
+    # ── FASE 4: Cruce staging × CESCO ─────────────────────────────────────
+    print()
+    print(f"  Fase 4 — Validacion final staging x CESCO")
+    t0 = _time.perf_counter()
+    staging_all = load_staging_records(staging_path)
+    cesco_recs  = _load("CESCO")
+
+    final_findings = run_cross_db_match({"STAGING": staging_all, "CESCO": cesco_recs})
+    elapsed4 = _time.perf_counter() - t0
+
+    fc4 = _Counter(f.flag for f in final_findings)
+    final_findings_dicts = [
+        {
+            "flag": f.flag, "strategy": f.strategy,
+            "confidence": f.confidence, "notes": f.notes,
+            "records": [
+                {"row_id": r.row_id, "nombre_completo": r.nombre_completo,
+                 "fecha_nacimiento": r.fecha_nacimiento, "municipio": r.municipio,
+                 "seguro_social": r.seguro_social, "source_db": r.source_db}
+                for r in f.records
+            ],
+        }
+        for f in final_findings
+    ]
+    meta4 = {
+        "scan_timestamp": scan_started_at.isoformat(),
+        "pipeline_phase": 4, "fase_label": "Validacion final CESCO",
+        "scanner": "pipeline",
+        "staging_records": len(staging_all),
+        "cesco_records": len(cesco_recs),
+        "name_mismatch": fc4.get("NAME_MISMATCH_CROSS_DB", 0),
+        "ssn_conflicts": fc4.get("SSN_CROSS_DB_CONFLICT", 0),
+        "total_findings": len(final_findings),
+        "duration_seconds": round(elapsed4, 3),
+    }
+    report4 = output_dir / "pipeline_fase4_cesco_final.json"
+    report4.write_text(
+        _json.dumps({"meta": meta4, "findings": final_findings_dicts},
+                    indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"    Staging: {len(staging_all)} | CESCO: {len(cesco_recs)} | "
+          f"hallazgos: {len(final_findings)}")
+    print(f"    NAME_MISMATCH: {fc4.get('NAME_MISMATCH_CROSS_DB',0)} | "
+          f"SSN_CONFLICT: {fc4.get('SSN_CROSS_DB_CONFLICT',0)}")
+    print(f"    Reporte: {report4.name}")
+    all_reports.append(report4)
+
+    # ── Resumen final ──────────────────────────────────────────────────────
+    staging_stats = get_staging_stats(staging_path)
+    elapsed_total = _time.perf_counter() - start_time
+    print(f"\n{sep}")
+    print("  RESUMEN DEL PIPELINE")
+    print(f"{sep}")
+    print(f"  Staging rd_cee_depurado.db  : {staging_stats['total']} registros limpios")
+    for src, n in staging_stats.get("por_fuente", {}).items():
+        print(f"    {src:<8}: {n}")
+    print(f"  Hallazgos Fase 3 (RD x CEE) : {len(cross_findings)}")
+    print(f"  Hallazgos Fase 4 (CESCO)     : {len(final_findings)}")
+    print(f"  Tiempo total                 : {elapsed_total:.2f}s")
+    print(f"  Reportes generados ({len(all_reports)}):")
+    for rp in all_reports:
+        print(f"    {rp}")
+    print(f"\n  Siguiente paso:")
+    print(f"    scanner-agent --scanner serve --report {all_reports[0]} --matriz <ruta>")
+    print(f"    (revisa cada reporte de fase con --report <archivo>)")
+    print(f"{sep}\n")
 
 
 # ── DB scan report writers ─────────────────────────────────────────────────
@@ -602,6 +888,10 @@ def main() -> None:
             print(f"  Inconsistencias nombre   : {flag_counts.get('NAME_MISMATCH_CROSS_DB',0)}")
             print(f"  Conflictos SSN cross-DB  : {flag_counts.get('SSN_CROSS_DB_CONFLICT',0)}")
             print(f"  Reporte                  : {audit_path}")
+
+    # ── PIPELINE ──────────────────────────────────────────────────────────
+    elif args.scanner == "pipeline":
+        _run_pipeline(args, output_dir, scan_started_at, start_time)
 
     # ── WEB SERVE ─────────────────────────────────────────────────────────
     elif args.scanner == "serve":
