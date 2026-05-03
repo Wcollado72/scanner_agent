@@ -418,42 +418,4 @@
               </div>
               {% if c.documentos %}
               <div class="small text-muted mt-1">
-                <i class="bi bi-file-earmark-text me-1"></i>{{ c.documentos[:60] }}{% if c.documentos|length > 60 %}...{% endif %}
-              </div>
-              {% endif %}
-            {% endif %}
-          </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-      {% endif %}<!-- /needs_contact -->
-
-      <!-- Action history -->
-      {% if history %}
-      <div class="card border-0 shadow-sm">
-        <div class="card-header bg-white fw-semibold py-3">
-          <i class="bi bi-clock-history me-1"></i>Historial de acciones
-        </div>
-        <ul class="list-group list-group-flush">
-          {% for entry in history | reverse %}
-          <li class="list-group-item py-2">
-            <div class="d-flex justify-content-between align-items-center">
-              <span class="badge bg-secondary small text-uppercase">{{ entry.action }}</span>
-              <span class="history-ts text-muted">{{ entry.timestamp[:19].replace('T',' ') }}</span>
-            </div>
-            <div class="small text-muted mt-1">
-              <i class="bi bi-person me-1"></i>{{ entry.role }}
-              {% if entry.notes %}&mdash; {{ entry.notes }}{% endif %}
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-
-    </div><!-- /action-panel -->
-  </div><!-- /col-lg-4 -->
-
-</div><!-- /row -->
-{% endblock %}
+                <i c

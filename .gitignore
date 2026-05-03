@@ -42,8 +42,4 @@ reports/
 # Local manual sandbox data
 sandboxtest_test/
 
-# Test data (synthetic databases — not source code)
-tests/data/
-
-# Temporary structure note
-Project_Structure.txt
+# Test data (synthetic databases — not source c

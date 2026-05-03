@@ -1,0 +1,104 @@
+scanner_agent/  v0.9.1
+├─ pyproject.toml                <- v0.9.0 · sqlalchemy · connectors optional dep
+├─ README.md
+├─ TESTING.md
+├─ SECURITY.md
+├─ .gitignore
+├─ .env.example
+├─ Project_Structure.txt
+├─ src/
+│  └─ scanner_agent/
+│     ├─ __init__.py             <- version 0.9.0
+│     ├─ __main__.py
+│     ├─ cli.py                  <- v0.9.1: --dry-run · --yes · --approved-by · --exec-log
+│     │                             Plan→Aprobar→Ejecutar integrado en pipeline + nomina
+│     ├─ config.py
+│     ├─ logging_config.py
+│     ├─ models.py               <- v0.8.0: AuditDomain · AuditFlag(22) · RowRecord extendido
+│     ├─ execution_plan.py       <- NEW v0.9.1: PlannedOperation · ExecutionPlan
+│     │                             build_pipeline_plan() · build_nomina_plan()
+│     │                             display_plan() · confirm_execution() [s/N]
+│     │                             log_execution_start/complete() · get_execution_history()
+│     │                             execution_log SQLite (audit trail aprobaciones)
+│     ├─ scanners/
+│     │  ├─ db_scanner.py        <- v0.9.0: campos nomina+financiero en _raw_to_row_record
+│     │  │                          sqlite · mssql+pyodbc · mysql+pymysql · csv
+│     │  ├─ local_scanner.py
+│     │  └─ [stubs: cloud, email, external]
+│     ├─ detection/
+│     │  ├─ record_matcher.py    <- pipeline: exact→near→ssn→address→deceased
+│     │  ├─ address_analyzer.py  <- PR address norm + cluster detection
+│     │  ├─ cross_db_matcher.py  <- cruce CEE×RD×CESCO
+│     │  ├─ clean_exporter.py    <- v0.8.0: export_clean_records() · load_staging_records()
+│     │  ├─ nomina_scanner.py    <- NEW v0.9.0: MULTI_AGENCY · DECEASED_EMPLOYEE · SALARY_ANOMALY
+│     │  │                          scan_multi_agency() · scan_deceased_employees()
+│     │  │                          scan_salary_anomalies() · run_nomina_scan()
+│     │  └─ [hash_engine, duplicate_engine, code_fingerprint]
+│     ├─ safety/
+│     │  └─ exclusions.py
+│     ├─ reporting/
+│     │  └─ report_writer.py
+│     └─ web/
+│        ├─ app.py               <- v0.7.0: confirm→matriz_writer · /matriz route
+│        ├─ excel_export.py      <- colores/labels para flags
+│        ├─ matriz_writer.py     <- v0.7.0: write_confirmed_finding() · get_stats()
+│        │                          ACCIONES_POR_FLAG por tipo de flag
+│        └─ templates/
+│           ├─ base.html         <- navbar: Dashboard + Matriz
+│           ├─ login.html
+│           ├─ dashboard.html
+│           ├─ finding.html      <- confirm: selector accion_tomada + aviso matriz
+│           └─ matriz.html       <- v0.7.0: stats de matriz_certificada.db
+└─ tests/
+   ├─ data/
+   │  ├─ mock_cee.db             <- 532 registros · 4 clusters · 3 casos cross-DB
+   │  ├─ mock_rd.db              <- 202 defunciones · 150 nacimientos · Casos 2+3
+   │  ├─ mock_cesco.db           <- 404 docs CESCO · Casos 1+3
+   │  │                             Real ID - Licencia (296) · Real ID - Tarjeta ID (108)
+   │  ├─ mock_nomina.db          <- NEW v0.9.0: 298 empleados · 5 MULTI_AGENCY · 3 DECEASED · 5 SALARY
+   │  ├─ rd_cee_depurado.db      <- staging intermedio Fases 1+2 (generado por pipeline)
+   │  └─ matriz_certificada.db   <- registros certificados finales (se puebla desde dashboard)
+   ├─ create_mock_db.py          <- CEE sintético con clusters
+   ├─ create_mock_rd.py          <- Registro Demográfico sintético
+   ├─ create_mock_cesco.py       <- CESCO sintético (Real ID - Licencia / Tarjeta ID)
+   ├─ create_mock_nomina.py      <- NEW v0.9.0: nómina gobierno PR sintética
+   ├─ create_master_db.py        <- esquema de base maestra depurada
+   ├─ test_address_analyzer.py   <- 30 tests
+   ├─ test_db_scanner.py         <- 11 tests
+   ├─ test_clean_exporter.py     <- 37 tests
+   ├─ test_nomina_scanner.py     <- NEW v0.9.0: 37 tests
+   └─ [test_hash_engine, test_duplicate_engine, test_exclusions, test_local_scanner, test_report_writer]
+
+────────────────────────────────────────────────────────────────────────────
+BASES DE DATOS DEL SISTEMA
+────────────────────────────────────────────────────────────────────────────
+  ELECTORAL (Fases 1-4):
+    mock_cee.db           Padrón electoral CEE (SQLite)
+    mock_rd.db            Registro Demográfico — defunciones + nacimientos (SQLite)
+    mock_cesco.db         CESCO — Real ID con/sin privilegio de conducir (SQLite)
+    rd_cee_depurado.db    Staging intermedio: registros limpios RD+CEE post Fases 1+2
+    matriz_certificada.db Registros finales certificados por auditores
+
+  NOMINA (Dominio v0.9.0):
+    mock_nomina.db        Nómina gobierno PR — 298 empleados, 10 agencias
+
+ORDEN DE DEPURACIÓN — ELECTORAL (pipeline)
+  Fase 1 → RD interno    : duplicados y errores dentro del Registro Demográfico
+  Fase 2 → CEE interno   : duplicados, clusters, fallecidos dentro del padrón
+  Fase 3 → RD × CEE      : cruce de registros limpios — fallecidos, conflictos SSN
+  Fase 4 → staging × CESCO : validación final contra Real ID federal
+
+CESCO — TIPOS DE DOCUMENTO
+  Real ID - Licencia    Conduce + identificacion federal (estrella dorada)
+  Real ID - Tarjeta ID  Solo identificacion federal, NO conduce (estrella dorada)
+  Ambos son Real ID. La diferencia es el privilegio de conducir.
+
+────────────────────────────────────────────────────────────────────────────
+FLAGS DEL SISTEMA (22 flags · 5 dominios)
+────────────────────────────────────────────────────────────────────────────
+  ELECTORAL — Intra-base (record_matcher.py):
+    EXACT_DUPLICATE         misma persona, mismo hash              conf 1.00
+    NEAR_DUPLICATE          nombre fuzzy + DOB + SSN + municipio   conf 0.40–0.99
+    ADDRESS_CLUSTER         concentracion anomala de electores      conf 0.75–0.97
+    POSSIBLE_DECEASED       edad > 100                             conf 0.80
+    ANOMALY                 edad < 0 o > 115     
