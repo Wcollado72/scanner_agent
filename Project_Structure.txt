@@ -1,4 +1,4 @@
-scanner_agent/  v0.9.1
+scanner_agent/  v1.1.0
 ├─ pyproject.toml                <- v0.9.0 · sqlalchemy · connectors optional dep
 ├─ README.md
 ├─ TESTING.md
@@ -8,9 +8,26 @@ scanner_agent/  v0.9.1
 ├─ Project_Structure.txt
 ├─ src/
 │  └─ scanner_agent/
-│     ├─ __init__.py             <- version 0.9.0
+│     ├─ __init__.py             <- version 1.0.0
+     ├─ agents/                  <- NEW v1.0.0: ARQUITECTURA MULTI-AGENTE
+     │  ├─ __init__.py           <- exports: AgentBus · OrchestratorAgent · DomainScannerAgent
+     │  │                           ReviewAgent · ReportAgent · BaseAgent · AgentConfig
+     │  ├─ bus.py                <- AgentBus (SQLite): sesiones · tareas · findings · mensajes
+     │  │                           open_session() · enqueue_task() · claim_task() · complete_task()
+     │  │                           post_finding() · get_findings() · update_finding_status()
+     │  │                           send_message() · read_messages() · session_stats()
+     │  ├─ base_agent.py         <- BaseAgent ABC: setup/run/teardown · execute_task()
+     │  │                           publish_finding() · AgentConfig
+     │  ├─ scanner_agent.py      <- DomainScannerAgent: ELECTORAL (4 fases) · NOMINA
+     │  │                           stubs: CONTRATOS · PENSIONES · SALUD
+     │  ├─ review_agent.py       <- ReviewAgent: deduplicacion cross-agente · auto-certify
+     │  │                           exclusion list · _HIGH_CONFIDENCE_FLAGS · _HUMAN_REVIEW_FLAGS
+     │  ├─ report_agent.py       <- ReportAgent: matriz_certificada · JSON report · summary.txt
+     │  │                           agent_certified_findings table
+     │  └─ orchestrator.py       <- OrchestratorAgent: run_audit() · pipeline Scanner→Review→Report
+     │                              get_session_status() · list_recent_sessions()
 │     ├─ __main__.py
-│     ├─ cli.py                  <- v0.9.1: --dry-run · --yes · --approved-by · --exec-log
+│     ├─ cli.py                  <- v1.1.0: --scanner audit (OrchestratorAgent) · --domains · --bus-db · --yes · --approved-by · --exec-log
 │     │                             Plan→Aprobar→Ejecutar integrado en pipeline + nomina
 │     ├─ config.py
 │     ├─ logging_config.py
@@ -63,6 +80,7 @@ scanner_agent/  v0.9.1
    ├─ create_mock_cesco.py       <- CESCO sintético (Real ID - Licencia / Tarjeta ID)
    ├─ create_mock_nomina.py      <- NEW v0.9.0: nómina gobierno PR sintética
    ├─ create_master_db.py        <- esquema de base maestra depurada
+   ├─ test_agents.py             <- NEW v1.0.0: 20+ tests multi-agente (bus · scanner · review · report · e2e)
    ├─ test_address_analyzer.py   <- 30 tests
    ├─ test_db_scanner.py         <- 11 tests
    ├─ test_clean_exporter.py     <- 37 tests
@@ -77,28 +95,4 @@ BASES DE DATOS DEL SISTEMA
     mock_rd.db            Registro Demográfico — defunciones + nacimientos (SQLite)
     mock_cesco.db         CESCO — Real ID con/sin privilegio de conducir (SQLite)
     rd_cee_depurado.db    Staging intermedio: registros limpios RD+CEE post Fases 1+2
-    matriz_certificada.db Registros finales certificados por auditores
-
-  NOMINA (Dominio v0.9.0):
-    mock_nomina.db        Nómina gobierno PR — 298 empleados, 10 agencias
-
-ORDEN DE DEPURACIÓN — ELECTORAL (pipeline)
-  Fase 1 → RD interno    : duplicados y errores dentro del Registro Demográfico
-  Fase 2 → CEE interno   : duplicados, clusters, fallecidos dentro del padrón
-  Fase 3 → RD × CEE      : cruce de registros limpios — fallecidos, conflictos SSN
-  Fase 4 → staging × CESCO : validación final contra Real ID federal
-
-CESCO — TIPOS DE DOCUMENTO
-  Real ID - Licencia    Conduce + identificacion federal (estrella dorada)
-  Real ID - Tarjeta ID  Solo identificacion federal, NO conduce (estrella dorada)
-  Ambos son Real ID. La diferencia es el privilegio de conducir.
-
-────────────────────────────────────────────────────────────────────────────
-FLAGS DEL SISTEMA (22 flags · 5 dominios)
-────────────────────────────────────────────────────────────────────────────
-  ELECTORAL — Intra-base (record_matcher.py):
-    EXACT_DUPLICATE         misma persona, mismo hash              conf 1.00
-    NEAR_DUPLICATE          nombre fuzzy + DOB + SSN + municipio   conf 0.40–0.99
-    ADDRESS_CLUSTER         concentracion anomala de electores      conf 0.75–0.97
-    POSSIBLE_DECEASED       edad > 100                             conf 0.80
-    ANOMALY                 edad < 0 o > 115     
+    matriz_

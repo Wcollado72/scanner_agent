@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}Sesión {{ audit_session.session_id[:8] }}{% endblock %}
+
+{% block content %}
+
+<!-- Header -->
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb mb-1 small">
+        <li class="breadcrumb-item"><a href="{{ url_for('sessions_list') }}">Sesiones</a></li>
+        <li class="breadcrumb-item active">{{ audit_session.session_id[:8] }}…</li>
+      </ol>
+    </nav>
+    <h5 class="mb-0">
+      <i class="bi bi-shield-check me-2 text-primary"></i>
+      Sesión de Auditoría
+      <code class="ms-2 fs-6">{{ audit_session.session_id[:12] }}…</code>
+    </h5>
+  </div>
+  <div class="text-end">
+    {% if audit_session.status == 'completed' %}
+      <span class="badge bg-success fs-6 px-3 py-2">completada</span>
+    {% elif audit_session.status == 'failed' %}
+      <span class="badge bg-danger fs-6 px-3 py-2">fallida</span>
+    {% elif audit_session.status in ('scanning', 'reviewing', 'reporting') %}
+      <span class="badge bg-warning text-dark fs-6 px-3 py-2">
+        <span class="spinner-border spinner-border-sm me-1"></span>{{ audit_session.status }}
+      </span>
+    {% else %}
+      <span class="badge bg-secondary fs-6 px-3 py-2">{{ audit_session.status }}</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Metadata row -->
+<div class="row g-2 mb-4">
+  <div class="col-auto">
+    <span class="text-muted small">Dominios:</span>
+    {% for d in audit_session.domains %}
+      <span class="badge bg-dark ms-1">{{ d }}</span>
+    {% endfor %}
+  </div>
+  <div class="col-auto">
+    <span class="text-muted small">Iniciado por:</span>
+    <strong class="ms-1">{{ audit_session.started_by }}</strong>
+  </div>
+  <div class="col-auto">
+    <span class="text-muted small">Fecha:</span>
+    <span class="ms-1">{{ audit_session.started_at[:16].replace('T',' ') if audit_session.started_at else '—' }}</span>
+  </div>
+  {% if audit_session.completed_at %}
+  <div class="col-auto">
+    <span class="text-muted small">Completada:</span>
+    <span class="ms-1">{{ audit_session.completed_at[:16].replace('T',' ') }}</span>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Stats cards -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card text-center border-0 shadow-sm">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-dark">{{ audit_session.total_findings }}</div>
+        <div class="small text-muted">Hallazgos totales</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center border-0 shadow-sm">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-success">{{ audit_session.certified_findings }}</div>
+        <div class="small text-muted">Certificados</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center border-0 shadow-sm">
+      <div class="card-body py-3">
+        {% set pending_count = stats.by_status.get('pending', 0) + stats.by_status.get('reviewed', 0) %}
+        <div class="fs-2 fw-bold text-warning">{{ pending_count }}</div>
+        <div class="small text-muted">Pendientes de revisión</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center border-0 shadow-sm">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-secondary">{{ stats.by_status.get('dismissed', 0) }}</div>
+        <div class="small text-muted">Descartados</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Flags breakdown -->
+{% if stats.flags %}
+<div class="card shadow-sm mb-4">
+  <div class="card-header py-2 fw-semibold">
+    <i class="bi bi-bar-chart me-2"></i>Distribución por flag
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Flag</th><th>Dominio</th>
+          <th class="text-center">Cantidad</th>
+          <th class="text-center">Confianza media</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in stats.flags %}
+        <tr>
+          <td>
+            {% set meta = flag_meta.get(row.flag, ('secondary', row.flag)) %}
+            <span class="badge bg-{{ meta[0] }}">{{ row.flag }}</span>
+          </td>
+          <td><span class="badge bg-dark">{{ row.domain }}</span></td>
+          <td class="text-center fw-bold">{{ row.cnt }}</td>
+          <td class="text-center">{{ "%.0f%%"|format(row.avg_conf * 100) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- Filtros -->
+<form method="get" class="row g-2 mb-3">
+  <div class="col-auto">
+    <select name="domain" class="form-select form-select-sm">
+      <option value="">Todos los dominios</option>
+      {% for d in all_domains %}
+        <option value="{{ d }}" {% if filter_domain == d %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <select name="status" class="form-select form-select-sm">
+      <option value="">Todos los estados</option>
+      <option value="pending"   {% if filter_status == 'pending'   %}selected{% endif %}>Pendiente</option>
+      <option value="reviewed"  {% if filter_status == 'reviewed'  %}selected{% endif %}>Revisado</option>
+      <option value="certified" {% if filter_status == 'certified' %}selected{% endif %}>Certificado</option>
+      <option value="dismissed" {% if filter_status == 'dismissed' %}selected{% endif %}>Descartado</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <select name="flag" class="form-select form-select-sm">
+      <option value="">Todos los flags</option>
+      {% for f in all_flags %}
+        <option value="{{ f }}" {% if filter_flag == f %}selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-funnel me-1"></i>Filtrar
+    </button>
+    <a href="{{ url_for('session_detail', session_id=audit_session.session_id) }}"
+       class="btn btn-sm btn-outline-secondary ms-1">Limpiar</a>
+  </div>
+</form>
+
+<!-- Tabla de findings -->
+<div class="card shadow-sm">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">
+      <i class="bi bi-list-check me-2"></i>Hallazgos
+      <span class="badge bg-secondary ms-1">{{ findings|length }}</span>
+    </span>
+  </div>
+  <div class="card-body p-0">
+    {% if not findings %}
+      <div class="p-4 text-center text-muted">
+        <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+        No hay hallazgos con los filtros actuales.
+      </div>
+    {% else %}
+    <table class="table table-hover mb-0 findings-table">
+      <thead class="table-dark">
+        <tr>
+          <th>ID</th>
+          <th>Flag</th>
+          <th>Dominio</th>
+          <th class="text-center">Confianza</th>
+          <th class="text-center">Registros</th>
+          <th>Agente</th>
+          <th>Estado</th>
+          <th>Notas</th>
+          <th class="text-center">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in findings %}
+        {% set meta = flag_meta.get(f.flag, ('secondary', f.flag)) %}
+        <tr>
+          <td><code class="small">{{ f.finding_id[:8] }}…</code></td>
+          <td>
+            <span class="badge bg-{{ meta[0] }}">{{ f.flag }}</span>
+          </td>
+          <td><span class="badge bg-dark">{{ f.domain }}</span></td>
+          <td class="text-center">
+            <span class="fw-bold {% if f.confidence >= 0.9 %}text-danger
+                                  {% elif f.confidence >= 0.7 %}text-warning
+                                  {% else %}text-muted{% endif %}">
+              {{ "%.0f%%"|format(f.confidence * 100) }}
+            </span>
+          </td>
+          <td class="text-center">{{ f.record_count }}</td>
+          <td class="small text-muted">{{ f.source_agent }}</td>
+          <td>
+            {% if f.status == 'certified' %}
+              <span class="badge bg-success">certificado</span>
+            {% elif f.status == 'dismissed' %}
+              <span class="badge bg-secondary">descartado</span>
+            {% elif f.status == 'reviewed' %}
+              <span class="badge bg-warning text-dark">en revisión</span>
+            {% else %}
+              <span class="badge bg-light text-dark border">pendiente</span>
+            {% endif %}
+          </td>
+          <td class="small text-muted" style="max-width:180px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;"
+              title="{{ f.notes }}">
+            {{ f.notes[:60] }}{% if f.notes|length > 60 %}…{% endif %}
+          </td>
+          <td class="text-center">
+            {% if f.status not in ('certified', 'dismissed') %}
+            <div class="btn-group btn-group-sm">
+              <!-- Certify -->
+              <form method="post"
+                    action="{{ url_for('certify_agent_finding', session_id=audit_session.session_id, finding_id=f.finding_id) }}"
+                    class="d-inline"
+                    onsubmit="return confirm('¿Certificar este hallazgo?')">
+                <button type="submit" class="btn btn-success btn-sm" title="Certificar">
+                  <i class="bi bi-check-lg"></i>
+                </button>
+              </form>
+              <!-- Dismiss -->
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      title="Descartar"
+                      data-bs-toggle="modal"
+                      data-bs-target="#dismissModal{{ loop.index }}">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+
+            <!-- Dismiss modal -->
+            <div class="modal fade" id="dismissModal{{ loop.index }}" tabindex="-1">
+              <div class="modal-dialog modal-sm">
+                <div class="modal-content">
+                  <form method="post"
+                        action="{{ url_for('dismiss_agent_finding', session_id=audit_session.session_id, finding_id=f.finding_id) }}">
+                    <div class="modal-header">
+                      <h6 class="modal-title">Descartar hallazgo</h6>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                      <label class="form-label small">Razón</label>
+                      <input type="text" name="reason" class="form-control form-control-sm"
+                             placeholder="Falso positivo, exclusión, etc." required>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                      <button type="submit" class="btn btn-sm btn-outline-danger">Descartar</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+            {% else %}
+              {% if f.dismissed_reason %}
+                <span class="small text-muted" title="{{ f.dismissed_reason }}">
+                  <i class="bi bi-info-circle"></i>
+                </span>
+              {% endif %}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

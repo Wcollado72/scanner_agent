@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Sesiones de Auditoría{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="mb-0">
+    <i class="bi bi-stack me-2 text-primary"></i>Sesiones de Auditoría Multi-Agente
+  </h5>
+  <span class="text-muted small">Bus: {{ bus_path or '—' }}</span>
+</div>
+
+{% if not sessions %}
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle me-2"></i>
+    No hay sesiones registradas aún.
+    Inicia una auditoría con:
+    <code class="ms-2">scanner-agent --scanner audit --domains ELECTORAL,NOMINA ...</code>
+  </div>
+{% else %}
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0 findings-table">
+      <thead class="table-dark">
+        <tr>
+          <th>Sesión</th>
+          <th>Dominios</th>
+          <th>Estado</th>
+          <th class="text-center">Total</th>
+          <th class="text-center">Certificados</th>
+          <th class="text-center">Revisados</th>
+          <th>Iniciado por</th>
+          <th>Fecha</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr>
+          <td>
+            <code class="small">{{ s.session_id[:8] }}…</code>
+          </td>
+          <td>
+            {% for d in s.domains %}
+              <span class="badge bg-secondary me-1">{{ d }}</span>
+            {% endfor %}
+          </td>
+          <td>
+            {% if s.status == 'completed' %}
+              <span class="badge bg-success">completada</span>
+            {% elif s.status == 'failed' %}
+              <span class="badge bg-danger">fallida</span>
+            {% elif s.status in ('scanning', 'reviewing', 'reporting') %}
+              <span class="badge bg-warning text-dark">
+                <i class="bi bi-arrow-repeat me-1"></i>{{ s.status }}
+              </span>
+            {% else %}
+              <span class="badge bg-secondary">{{ s.status }}</span>
+            {% endif %}
+          </td>
+          <td class="text-center fw-bold">{{ s.total_findings }}</td>
+          <td class="text-center">
+            <span class="text-success fw-bold">{{ s.certified_findings }}</span>
+          </td>
+          <td class="text-center">
+            <span class="text-warning fw-bold">
+              {{ s.reviewed_findings - s.certified_findings if s.reviewed_findings >= s.certified_findings else 0 }}
+            </span>
+          </td>
+          <td class="small text-muted">{{ s.started_by }}</td>
+          <td class="small text-muted">
+            {{ s.started_at[:16].replace('T', ' ') if s.started_at else '—' }}
+          </td>
+          <td>
+            <a href="{{ url_for('session_detail', session_id=s.session_id) }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-eye me-1"></i>Ver
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- Botón de nueva auditoría (solo admin) -->
+{% if session.role == 'admin' %}
+<div class="mt-4">
+  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newAuditModal">
+    <i class="bi bi-play-circle me-2"></i>Nueva Auditoría
+  </button>
+</div>
+
+<!-- Modal nueva auditoría -->
+<div class="modal fade" id="newAuditModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-play-circle me-2"></i>Nueva Auditoría Multi-Agente</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info small">
+          Esta función lanza el pipeline desde el dashboard.
+          Para auditorías de producción, usa el CLI con
+          <code>--scanner audit</code> para mayor control.
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Dominios</label>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="domElectoral" value="ELECTORAL" checked>
+            <label class="form-check-label" for="domElectoral">ELECTORAL (CEE × RD × CESCO)</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="domNomina" value="NOMINA" checked>
+            <label class="form-check-label" for="domNomina">NOMINA (empleados de gobierno)</label>
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Aprobado por</label>
+          <input type="text" class="form-control" id="approvedBy"
+                 value="{{ session.username or '' }}" placeholder="Nombre del auditor">
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="dryRunCheck">
+          <label class="form-check-label" for="dryRunCheck">
+            Dry-run (solo mostrar plan, no ejecutar)
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="btnRunAudit">
+          <i class="bi bi-play-circle me-1"></i>Iniciar Auditoría
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('btnRunAudit')?.addEventListener('click', async () => {
+  const domains = [];
+  if (document.getElementById('domElectoral').checked) domains.push('ELECTORAL');
+  if (document.getElementById('domNomina').checked)    domains.push('NOMINA');
+  const approvedBy = document.getElementById('approvedBy').value.trim();
+  const dryRun     = document.getElementById('dryRunCheck').checked;
+
+  if (!domains.length) {
+    alert('Selecciona al menos un dominio.');
+    return;
+  }
+
+  const btn = document.getElementById('btnRunAudit');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Ejecutando…';
+
+  try {
+    const resp = await fetch('/audit/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ domains, approved_by: approvedBy, dry_run: dryRun, sources: {} }),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.session_id) {
+      window.location.href = `/session/${data.session_id}`;
+    } else {
+      alert('Error: ' + (data.error || JSON.stringify(data)));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-circle me-1"></i>Iniciar Auditoría';
+    }
+  } catch (e) {
+    alert('Error de red: ' + e);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-circle me-1"></i>Iniciar Auditoría';
+  }
+});
+</script>
+{% endblock %}

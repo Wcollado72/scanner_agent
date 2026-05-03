@@ -10,10 +10,17 @@
     body { background: #f4f6f9; font-size: .9rem; }
     .navbar-brand { font-weight: 700; letter-spacing: .4px; }
     /* Flag badge colors */
-    .flag-EXACT_DUPLICATE   { background: #dc3545 !important; color: #fff; }
-    .flag-NEAR_DUPLICATE    { background: #ffc107 !important; color: #212529; }
-    .flag-POSSIBLE_DECEASED { background: #0dcaf0 !important; color: #212529; }
-    .flag-ANOMALY           { background: #6c757d !important; color: #fff; }
+    .flag-EXACT_DUPLICATE          { background: #dc3545 !important; color: #fff; }
+    .flag-NEAR_DUPLICATE           { background: #ffc107 !important; color: #212529; }
+    .flag-POSSIBLE_DECEASED        { background: #0dcaf0 !important; color: #212529; }
+    .flag-ANOMALY                  { background: #6c757d !important; color: #fff; }
+    .flag-CONFIRMED_DECEASED       { background: #842029 !important; color: #fff; }
+    .flag-ADDRESS_CLUSTER          { background: #212529 !important; color: #fff; }
+    .flag-NAME_MISMATCH_CROSS_DB   { background: #fd7e14 !important; color: #fff; }
+    .flag-SSN_CROSS_DB_CONFLICT    { background: #dc3545 !important; color: #fff; }
+    .flag-MULTI_AGENCY_EMPLOYEE    { background: #6f42c1 !important; color: #fff; }
+    .flag-DECEASED_EMPLOYEE        { background: #842029 !important; color: #fff; }
+    .flag-SALARY_ANOMALY           { background: #0d6efd !important; color: #fff; }
     /* Status pill */
     .status-pill-pending   { background: #e9ecef; color: #6c757d; border: 1px solid #dee2e6; }
     .status-pill-confirmed { background: #d1e7dd; color: #0f5132; }
@@ -41,23 +48,7 @@
       <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-light">
         <i class="bi bi-grid me-1"></i>Dashboard
       </a>
-      <a href="{{ url_for('matriz_stats') }}" class="btn btn-sm btn-outline-success">
-        <i class="bi bi-database-check me-1"></i>Matriz
+      <a href="{{ url_for('sessions_list') }}" class="btn btn-sm btn-outline-info">
+        <i class="bi bi-stack me-1"></i>Auditorías
       </a>
-      <span class="badge {% if session.role == 'admin' %}bg-danger{% else %}bg-secondary{% endif %} px-3 py-2">
-        <i class="bi bi-person-fill me-1"></i>{{ session.role_label }}
-      </span>
-      <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-light">
-        <i class="bi bi-box-arrow-right me-1"></i>Salir
-      </a>
-    </div>
-  </div>
-</nav>
-{% endif %}
-
-<div class="container-fluid px-4">
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for cat, msg in messages %}
-      <div class="alert alert-{{ cat }} alert-dismissible fade show py-2" role="alert">
-        {{ msg }}
-        <button type="button" 
+      <a href="{{ url_for('matriz_stats') }}"
