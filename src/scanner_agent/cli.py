@@ -19,9 +19,9 @@ from scanner_agent.scanners.local_scanner import scan_local_paths
 
 logger = logging.getLogger(__name__)
 
-CLI_VERSION = "0.8.0"
+CLI_VERSION = "0.9.0"
 
-SUPPORTED_SCANNERS = ("local", "db", "cross-db", "pipeline", "serve")
+SUPPORTED_SCANNERS = ("local", "db", "cross-db", "pipeline", "nomina", "serve")
 
 # ── Rich import (optional — degrades gracefully if not installed) ──────────
 try:
@@ -888,6 +888,129 @@ def main() -> None:
             print(f"  Inconsistencias nombre   : {flag_counts.get('NAME_MISMATCH_CROSS_DB',0)}")
             print(f"  Conflictos SSN cross-DB  : {flag_counts.get('SSN_CROSS_DB_CONFLICT',0)}")
             print(f"  Reporte                  : {audit_path}")
+
+    # ── NÓMINA SCANNER ────────────────────────────────────────────────────
+    elif args.scanner == "nomina":
+        import json as _json
+        from scanner_agent.detection.nomina_scanner import run_nomina_scan
+        from scanner_agent.models import AuditDomain
+
+        if not args.sources:
+            print(
+                "[ERROR] --source es requerido para --scanner nomina.\n"
+                "  Requerido : --source NOMINA:sqlite:///tests/data/mock_nomina.db:nomina_empleados\n"
+                "  Opcional  : --source RD:sqlite:///tests/data/mock_rd.db:defunciones",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        NOMINA_FIELD_MAP = {
+            "row_id":            "emp_id",
+            "nombre":            "nombre",
+            "apellido_paterno":  "apellido_paterno",
+            "apellido_materno":  "apellido_materno",
+            "seguro_social":     "seguro_social",
+            "agencia":           "agencia",
+            "puesto":            "puesto",
+            "salario":           "salario",
+            "fecha_inicio_empleo": "fecha_inicio",
+            "fecha_fin_empleo":    "fecha_fin",
+            "municipio":         "municipio",
+            "fecha_nacimiento":  "fecha_nacimiento",
+            "genero":            "genero",
+        }
+        RD_FIELD_MAP = {
+            "row_id":            "cert_num",
+            "nombre":            "nombre",
+            "apellido_paterno":  "apellido_paterno",
+            "apellido_materno":  "apellido_materno",
+            "fecha_nacimiento":  "fecha_nacimiento",
+            "seguro_social":     "seguro_social",
+            "municipio":         "municipio_res",
+        }
+
+        source_map: dict[str, tuple[str, str]] = {}
+        for spec in args.sources:
+            parts = spec.split(":", 1)
+            if len(parts) < 2:
+                print(f"[ERROR] Formato inválido: {spec!r}", file=sys.stderr); sys.exit(1)
+            alias = parts[0].upper()
+            rest_parts = parts[1].rsplit(":", 1)
+            if len(rest_parts) < 2:
+                print(f"[ERROR] Falta tabla en: {spec!r}", file=sys.stderr); sys.exit(1)
+            source_map[alias] = (rest_parts[0], rest_parts[1])
+
+        if "NOMINA" not in source_map:
+            print("[ERROR] Falta --source NOMINA:...", file=sys.stderr); sys.exit(1)
+
+        # Cargar nómina
+        conn_str, table = source_map["NOMINA"]
+        nomina_cfg = DbScanConfig(
+            connection_string=conn_str, table=table,
+            field_map=NOMINA_FIELD_MAP, source_alias="NOMINA",
+        )
+        try:
+            nomina_records = scan_db_table(nomina_cfg)
+        except Exception as exc:
+            print(f"[ERROR] Fallo al cargar NOMINA: {exc}", file=sys.stderr); sys.exit(1)
+
+        # Marcar dominio NOMINA
+        for r in nomina_records:
+            object.__setattr__(r, "source_domain", AuditDomain.NOMINA)
+
+        # Cargar RD (opcional)
+        rd_records = None
+        if "RD" in source_map:
+            rd_conn, rd_table = source_map["RD"]
+            rd_cfg = DbScanConfig(
+                connection_string=rd_conn, table=rd_table,
+                field_map=RD_FIELD_MAP, source_alias="RD",
+            )
+            try:
+                rd_records = scan_db_table(rd_cfg)
+                logger.info("RD defunciones cargadas: %d registros", len(rd_records))
+            except Exception as exc:
+                logger.warning("No se pudo cargar RD: %s — DECEASED_EMPLOYEE no disponible", exc)
+                rd_records = None
+
+        result = run_nomina_scan(nomina_records, rd_records=rd_records)
+        elapsed = time.perf_counter() - start_time
+
+        s = result["summary"]
+        scan_meta = {
+            "scan_timestamp":         scan_started_at.isoformat(),
+            "scanner":                "nomina",
+            "source":                 "NOMINA",
+            "table":                  table,
+            "total_rows_scanned":     result["total_records"],
+            "multi_agency_employee":  s.get("MULTI_AGENCY_EMPLOYEE", 0),
+            "deceased_employee":      s.get("DECEASED_EMPLOYEE", 0),
+            "salary_anomaly":         s.get("SALARY_ANOMALY", 0),
+            "total_flagged_records":  s.get("total_flagged_records", 0),
+            "rd_records_loaded":      len(rd_records) if rd_records else 0,
+            "duration_seconds":       round(elapsed, 3),
+        }
+
+        audit_path = output_dir / "audit_nomina.json"
+        audit_path.write_text(
+            _json.dumps({"meta": scan_meta, "findings": result["findings"]},
+                        indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        sep = "─" * 60
+        print(f"\n{sep}")
+        print("  scanner_agent — Auditoría de Nómina")
+        print(f"  Fuente          : NOMINA ({table})")
+        print(f"  Empleados        : {result['total_records']:,}")
+        print(f"  MULTI_AGENCY    : {s.get('MULTI_AGENCY_EMPLOYEE', 0)}")
+        print(f"  DECEASED_EMPL   : {s.get('DECEASED_EMPLOYEE', 0)}"
+              + ("" if rd_records else " (RD no cargado)"))
+        print(f"  SALARY_ANOMALY  : {s.get('SALARY_ANOMALY', 0)}")
+        print(f"  Flagged total   : {s.get('total_flagged_records', 0)}")
+        print(f"  Tiempo          : {elapsed:.2f}s")
+        print(f"  Reporte         : {audit_path}")
+        print(f"{sep}\n")
 
     # ── PIPELINE ──────────────────────────────────────────────────────────
     elif args.scanner == "pipeline":

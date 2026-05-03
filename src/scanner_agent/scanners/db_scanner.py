@@ -1,11 +1,17 @@
 """
-db_scanner.py  v0.6.0 — Multi-backend database scanner for audit intelligence.
+db_scanner.py  v0.9.0 — Multi-backend database scanner for audit intelligence.
 
 Supported backends:
   sqlite    sqlite:///path/to/file.db          (built-in, no extra deps)
   mssql     mssql+pyodbc://user:pass@server/db?driver=ODBC+Driver+18+for+SQL+Server
   mysql     mysql+pymysql://user:pass@host:3306/database
   csv       csv:///path/to/file.csv            (columna header row required)
+
+v0.9.0 changes:
+  _raw_to_row_record now maps nomina + financial fields:
+    agencia, num_empleado, puesto, salario, fecha_inicio_empleo, fecha_fin_empleo
+    num_transaccion, monto, fecha_transaccion, agencia_pagadora,
+    num_contrato, descripcion_pago, source_domain
 
 Usage:
     from scanner_agent.scanners.db_scanner import scan_db_table, DbScanConfig
@@ -60,7 +66,7 @@ class DbScanConfig:
         "mysql+pymysql://root:password@localhost:3306/audit_db"
         "csv:///C:/data/electores.csv"
 
-    field_map maps RowRecord field names → actual column names in the table.
+    field_map maps RowRecord field names -> actual column names in the table.
     Only mapped fields are extracted. Unmapped RowRecord fields stay None.
     """
 
@@ -157,26 +163,26 @@ def _iter_sqlalchemy_batches(
     except ImportError:
         raise ImportError(
             "SQLAlchemy is required for SQL Server / MySQL connections.\n"
-            "Install with: pip install sqlalchemy"
+            "Install with: pip install sqlalchemy pyodbc pymysql"
         )
 
-    engine = create_engine(connection_string, echo=False)
-    safe_cols  = ", ".join(f'[{c}]' if "mssql" in connection_string else f'`{c}`'
-                           for c in columns)
+    engine = create_engine(connection_string)
+    safe_cols  = ", ".join(f'"{c}"' for c in columns)
+    safe_table = f'"{table}"'
     where_sql  = f"WHERE {where}" if where else ""
-    query_str  = f"SELECT {safe_cols} FROM {table} {where_sql}"
-    logger.debug("SQLAlchemy query: %s", query_str)
+    query_str  = f'SELECT {safe_cols} FROM {safe_table} {where_sql}'
 
     with engine.connect() as conn:
         result = conn.execute(text(query_str))
         keys   = list(result.keys())
-        while True:
-            rows = result.fetchmany(batch_size)
-            if not rows:
-                break
-            yield [dict(zip(keys, row)) for row in rows]
-
-    engine.dispose()
+        batch: list[dict[str, Any]] = []
+        for row in result:
+            batch.append(dict(zip(keys, row)))
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
 
 # ── CSV connector ──────────────────────────────────────────────────────────
@@ -186,10 +192,6 @@ def _iter_csv_batches(
     columns: list[str],
     batch_size: int,
 ) -> Iterator[list[dict[str, Any]]]:
-    """
-    Read a CSV file row by row, yielding batches.
-    Columns not present in the CSV are returned as None.
-    """
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         batch: list[dict[str, Any]] = []
@@ -212,6 +214,12 @@ def _raw_to_row_record(raw: dict[str, Any], config: DbScanConfig) -> RowRecord:
         col = fmap.get(field_name)
         return raw.get(col) if col else None
 
+    def _to_float(v: Any) -> float | None:
+        try:
+            return float(v) if v is not None else None
+        except (ValueError, TypeError):
+            return None
+
     edad_val = get("edad")
     try:
         edad = int(edad_val) if edad_val is not None else None
@@ -222,22 +230,41 @@ def _raw_to_row_record(raw: dict[str, Any], config: DbScanConfig) -> RowRecord:
     ap     = get("apellido_paterno") or ""
     am     = get("apellido_materno") or ""
 
+    # source_domain: puede mapearse en el field_map o queda en default ELECTORAL
+    from scanner_agent.models import AuditDomain
+    source_domain_val = get("source_domain") or AuditDomain.ELECTORAL
+
     record = RowRecord(
-        row_id       = str(get("row_id") or ""),
-        source_table = config.table,
-        source_db    = config.source_label,
-        nombre       = nombre or None,
+        row_id           = str(get("row_id") or ""),
+        source_table     = config.table,
+        source_db        = config.source_label,
+        source_domain    = source_domain_val,
+        nombre           = nombre or None,
         apellido_paterno = ap or None,
         apellido_materno = am or None,
         fecha_nacimiento = get("fecha_nacimiento"),
-        edad         = edad,
-        genero       = get("genero"),
-        direccion    = get("direccion"),
-        municipio    = get("municipio"),
-        seguro_social = get("seguro_social"),
-        telefono     = get("telefono"),
-        tipo_telefono = get("tipo_telefono"),
-        raw_data     = dict(raw),
+        edad             = edad,
+        genero           = get("genero"),
+        direccion        = get("direccion"),
+        municipio        = get("municipio"),
+        seguro_social    = get("seguro_social"),
+        telefono         = get("telefono"),
+        tipo_telefono    = get("tipo_telefono"),
+        # -- Nomina / Empleo ------------------------------------------------
+        agencia             = get("agencia"),
+        num_empleado        = get("num_empleado"),
+        puesto              = get("puesto"),
+        salario             = _to_float(get("salario")),
+        fecha_inicio_empleo = get("fecha_inicio_empleo"),
+        fecha_fin_empleo    = get("fecha_fin_empleo"),
+        # -- Financiero / Pagos ---------------------------------------------
+        num_transaccion  = get("num_transaccion"),
+        monto            = _to_float(get("monto")),
+        fecha_transaccion = get("fecha_transaccion"),
+        agencia_pagadora = get("agencia_pagadora"),
+        num_contrato     = get("num_contrato"),
+        descripcion_pago = get("descripcion_pago"),
+        raw_data         = dict(raw),
     )
 
     nombre_norm = " ".join(filter(None, [
@@ -265,7 +292,7 @@ def scan_db_table(config: DbScanConfig) -> list[RowRecord]:
     field_map  = config.field_map
     db_columns: list[str] = list(field_map.values())
     if not db_columns:
-        raise ValueError("field_map is empty — provide at least one field mapping.")
+        raise ValueError("field_map is empty -- provide at least one field mapping.")
 
     records: list[RowRecord] = []
     total_rows = 0
@@ -326,36 +353,17 @@ def mssql_connection_string(
     password: str = "",
     driver: str = "ODBC Driver 18 for SQL Server",
     trusted: bool = False,
-    trust_cert: bool = True,
 ) -> str:
-    """
-    Build a SQL Server connection string for SQLAlchemy.
-
-    Examples:
-        # Windows Authentication (trusted connection)
-        mssql_connection_string("localhost", "AuditDB", trusted=True)
-
-        # SQL Server Authentication
-        mssql_connection_string("localhost\\SQLEXPRESS", "AuditDB", "sa", "pass")
-    """
-    import urllib.parse
-    driver_enc = urllib.parse.quote_plus(driver)
-    trust      = "yes" if trust_cert else "no"
-
+    """Build a SQL Server connection string for SQLAlchemy."""
+    drv = driver.replace(" ", "+")
     if trusted:
         return (
-            f"mssql+pyodbc:///?odbc_connect="
-            + urllib.parse.quote_plus(
-                f"Driver={{{driver}}};Server={server};Database={database};"
-                f"Trusted_Connection=yes;TrustServerCertificate={trust};"
-            )
+            f"mssql+pyodbc://{server}/{database}"
+            f"?driver={drv}&TrustServerCertificate=yes&Trusted_Connection=yes"
         )
     return (
-        f"mssql+pyodbc:///?odbc_connect="
-        + urllib.parse.quote_plus(
-            f"Driver={{{driver}}};Server={server};Database={database};"
-            f"UID={username};PWD={password};TrustServerCertificate={trust};"
-        )
+        f"mssql+pyodbc://{username}:{password}@{server}/{database}"
+        f"?driver={drv}&TrustServerCertificate=yes"
     )
 
 
@@ -366,5 +374,5 @@ def mysql_connection_string(
     password: str,
     port: int = 3306,
 ) -> str:
-    """Build a MySQL connection string for SQLAlchemy."""
+    """Build a MySQL connection string for SQLAlchemy (requires pymysql)."""
     return f"mysql+pymysql://{username}:{password}@{host}:{port}/{database}"
