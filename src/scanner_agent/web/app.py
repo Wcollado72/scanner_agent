@@ -383,4 +383,327 @@ def log_citation(idx):
     return redirect(url_for("finding", idx=idx))
 
 
-# ── Routes: matriz certificada ──────────────────�
+# ── Routes: matriz certificada ────────────────────────────────────────────
+
+@app.route("/matriz")
+@require_login
+def matriz_stats():
+    """Resumen de registros certificados en matriz_certificada.db."""
+    if not _matriz_path:
+        flash("Matriz certificada no configurada. Use --matriz al iniciar el servidor.", "warning")
+        return redirect(url_for("dashboard"))
+    from scanner_agent.web.matriz_writer import get_stats
+    stats = get_stats(_matriz_path)
+    return render_template("matriz.html", stats=stats, matriz_path=str(_matriz_path))
+
+
+# ── Routes: Excel export ───────────────────────────────────────────────────
+
+@app.route("/export")
+@require_login
+def export_excel():
+    """Generate and serve a formatted Excel audit report."""
+    try:
+        from scanner_agent.web.excel_export import build_excel_report
+        findings = _report.get("findings", [])
+        reviews  = _review_log.get("reviews", {})
+        meta     = _report.get("meta", {})
+        out_path = _review_log_path.parent / "audit_export.xlsx" if _review_log_path else Path("audit_export.xlsx")
+        build_excel_report(findings, reviews, meta, out_path)
+        return send_file(str(out_path), as_attachment=True,
+                         download_name="audit_export.xlsx",
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as exc:
+        logger.error("Excel export failed: %s", exc)
+        flash(f"Error al generar el reporte Excel: {exc}", "danger")
+        return redirect(url_for("dashboard"))
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _apply_status(idx: int, status: str, action: str, notes: str) -> None:
+    rev = _review_log["reviews"].setdefault(
+        str(idx), {"status": "pending", "action_history": []})
+    rev["status"] = status
+    _log_action(idx, action, notes=notes)
+    _save_review_log()
+
+
+def _log_action(idx: int, action: str, notes: str = "", extra: dict | None = None) -> None:
+    rev = _review_log["reviews"].setdefault(
+        str(idx), {"status": "pending", "action_history": []})
+    entry: dict = {
+        "timestamp": _now_iso(),
+        "action":    action,
+        "role":      session.get("role", "unknown"),
+        "notes":     notes,
+    }
+    if extra:
+        entry.update(extra)
+    rev.setdefault("action_history", []).append(entry)
+
+
+# ── AgentBus state ────────────────────────────────────────────────────────
+
+_bus = None          # AgentBus instance (opcional — solo si bus_db_path dado)
+_bus_path: str = ""
+
+
+def _get_bus():
+    """Retorna el AgentBus activo o None si no esta configurado."""
+    return _bus
+
+
+# ── Routes: Audit Sessions (multi-agente) ─────────────────────────────────
+
+@app.route("/sessions")
+@require_login
+def sessions_list():
+    """Lista todas las sesiones de auditoria del AgentBus."""
+    bus = _get_bus()
+    if not bus:
+        flash("AgentBus no configurado. Inicie el servidor con --bus-db.", "warning")
+        return redirect(url_for("dashboard"))
+    sessions = bus.list_sessions(limit=50)
+    return render_template("sessions.html", sessions=sessions, bus_path=_bus_path)
+
+
+@app.route("/session/<session_id>")
+@require_login
+def session_detail(session_id):
+    """Detalle de una sesion: estadisticas + tabla de findings."""
+    bus = _get_bus()
+    if not bus:
+        flash("AgentBus no configurado.", "warning")
+        return redirect(url_for("dashboard"))
+
+    audit_session = bus.get_session(session_id)
+    if not audit_session:
+        flash(f"Sesion {session_id[:8]}... no encontrada.", "danger")
+        return redirect(url_for("sessions_list"))
+
+    # Filtros opcionales por query params
+    filter_domain  = request.args.get("domain", "")
+    filter_status  = request.args.get("status", "")
+    filter_flag    = request.args.get("flag", "")
+
+    findings = bus.get_findings(
+        session_id=session_id,
+        status=filter_status or None,
+        domain=filter_domain or None,
+    )
+
+    # Filtro adicional por flag (no soportado en get_findings directamente)
+    if filter_flag:
+        findings = [f for f in findings if f.flag == filter_flag]
+
+    stats = bus.session_stats(session_id)
+    all_flags   = sorted({f.flag for f in bus.get_findings(session_id)})
+    all_domains = sorted({f.domain for f in bus.get_findings(session_id)})
+
+    return render_template(
+        "session.html",
+        audit_session=audit_session,
+        findings=findings,
+        stats=stats,
+        all_flags=all_flags,
+        all_domains=all_domains,
+        filter_domain=filter_domain,
+        filter_status=filter_status,
+        filter_flag=filter_flag,
+        flag_meta=FLAG_META,
+    )
+
+
+@app.route("/session/<session_id>/finding/<finding_id>/certify", methods=["POST"])
+@require_login
+def certify_agent_finding(session_id, finding_id):
+    """Certifica un finding del AgentBus desde el dashboard."""
+    bus = _get_bus()
+    if not bus:
+        flash("AgentBus no configurado.", "warning")
+        return redirect(url_for("dashboard"))
+
+    reviewer = session.get("username", "auditor")
+    bus.update_finding_status(
+        finding_id=finding_id,
+        status="certified",
+        reviewed_by=reviewer,
+    )
+
+    # Escribir a matriz_certificada si esta configurada
+    if _matriz_path:
+        try:
+            findings = bus.get_findings(session_id, status="certified")
+            target = next((f for f in findings if f.finding_id == finding_id), None)
+            if target:
+                _write_agent_finding_to_matriz(target)
+        except Exception as exc:
+            logger.warning("Error escribiendo a matriz: %s", exc)
+
+    flash("Hallazgo certificado.", "success")
+    return redirect(url_for("session_detail", session_id=session_id))
+
+
+@app.route("/session/<session_id>/finding/<finding_id>/dismiss", methods=["POST"])
+@require_login
+def dismiss_agent_finding(session_id, finding_id):
+    """Descarta un finding del AgentBus."""
+    bus = _get_bus()
+    if not bus:
+        flash("AgentBus no configurado.", "warning")
+        return redirect(url_for("dashboard"))
+
+    reason = request.form.get("reason", "Descartado por auditor").strip()
+    reviewer = session.get("username", "auditor")
+    bus.update_finding_status(
+        finding_id=finding_id,
+        status="dismissed",
+        reviewed_by=reviewer,
+        dismissed_reason=reason,
+    )
+    flash("Hallazgo descartado.", "info")
+    return redirect(url_for("session_detail", session_id=session_id))
+
+
+@app.route("/audit/run", methods=["POST"])
+@require_login
+def run_audit_session():
+    """
+    Lanza una nueva sesion de auditoria multi-agente desde el dashboard.
+    Recibe JSON: { domains, sources, approved_by, dry_run }
+    """
+    bus = _get_bus()
+    if not bus:
+        return {"error": "AgentBus no configurado"}, 503
+
+    data = request.get_json(force=True, silent=True) or {}
+    domains     = data.get("domains", ["ELECTORAL"])
+    sources     = data.get("sources", {})
+    approved_by = data.get("approved_by", session.get("username", "dashboard"))
+    dry_run     = bool(data.get("dry_run", False))
+
+    try:
+        from scanner_agent.agents.base_agent import AgentConfig
+        from scanner_agent.agents.orchestrator import OrchestratorAgent
+
+        config = AgentConfig(
+            dry_run=dry_run,
+            min_confidence=0.40,
+            approved_by=approved_by,
+        )
+        orch = OrchestratorAgent(bus, config)
+        result = orch.run_audit(
+            domains=domains,
+            sources=sources,
+            output_dir=str(Path(_bus_path).parent) if _bus_path else "reports",
+            matriz_path=str(_matriz_path) if _matriz_path else "",
+            dry_run=dry_run,
+            started_by=approved_by,
+        )
+        return result, 200
+    except Exception as exc:
+        logger.error("Error en run_audit_session: %s", exc)
+        return {"error": str(exc)}, 500
+
+
+@app.route("/session/<session_id>/stats")
+@require_login
+def session_stats_api(session_id):
+    """API JSON: estadisticas de una sesion (para polling desde el dashboard)."""
+    bus = _get_bus()
+    if not bus:
+        return {"error": "bus not configured"}, 503
+    stats = bus.session_stats(session_id)
+    return stats, 200
+
+
+# ── Helper: escribir finding del bus a matriz_certificada ─────────────────
+
+def _write_agent_finding_to_matriz(finding) -> None:
+    """Persiste un AgentFinding certificado en la tabla agent_certified_findings."""
+    import sqlite3, json as _json
+    if not _matriz_path:
+        return
+    conn = sqlite3.connect(str(_matriz_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_certified_findings (
+            finding_id TEXT PRIMARY KEY, session_id TEXT, source_agent TEXT,
+            domain TEXT, flag TEXT, confidence REAL, record_count INTEGER,
+            records_json TEXT, notes TEXT, status TEXT, dismissed_reason TEXT,
+            created_at TEXT, certified_at TEXT, certified_by TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT OR REPLACE INTO agent_certified_findings
+        (finding_id, session_id, source_agent, domain, flag, confidence,
+         record_count, records_json, notes, status, dismissed_reason,
+         created_at, certified_at, certified_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        finding.finding_id, finding.session_id, finding.source_agent,
+        finding.domain, finding.flag, finding.confidence, finding.record_count,
+        _json.dumps(finding.records), finding.notes, finding.status,
+        finding.dismissed_reason, finding.created_at,
+        _now_iso(), "dashboard",
+    ))
+    conn.commit()
+    conn.close()
+
+
+# ── create_app ────────────────────────────────────────────────────────────
+
+def create_app(
+    report_path: str = "",
+    review_log_path: str = "",
+    matriz_db_path: str = "",
+    bus_db_path: str = "",
+) -> "Flask":
+    """
+    Factoria de la aplicacion Flask.
+
+    Inicializa el estado global de la app:
+        - Carga el reporte JSON (modo clasico)
+        - Conecta al AgentBus (modo multi-agente)
+        - Configura la matriz_certificada
+
+    Args:
+        report_path:     path al JSON de reporte (modo clasico, opcional)
+        review_log_path: path al review log JSON (modo clasico)
+        matriz_db_path:  path a la matriz_certificada.db
+        bus_db_path:     path al AgentBus SQLite (modo multi-agente)
+    """
+    global _bus, _bus_path
+
+    # Inicializar modo clasico (report JSON) si se proporciona
+    if report_path and Path(report_path).exists():
+        rp = Path(report_path)
+        rlp = Path(review_log_path) if review_log_path else rp.parent / "review_log.json"
+        mp  = Path(matriz_db_path) if matriz_db_path else None
+        init_app(rp, rlp, mp)
+    elif matriz_db_path:
+        global _matriz_path
+        _matriz_path = Path(matriz_db_path)
+
+    # Inicializar AgentBus si se proporciona
+    if bus_db_path:
+        try:
+            from scanner_agent.agents.bus import AgentBus
+            _bus_path = bus_db_path
+            _bus = AgentBus(bus_db_path)
+            logger.info("AgentBus conectado: %s", bus_db_path)
+        except Exception as exc:
+            logger.warning("No se pudo conectar al AgentBus: %s", exc)
+    elif not report_path:
+        # Intentar bus por defecto si existe
+        default_bus = Path("reports/agent_bus.db")
+        if default_bus.exists():
+            try:
+                from scanner_agent.agents.bus import AgentBus
+                _bus_path = str(default_bus)
+                _bus = AgentBus(str(default_bus))
+                logger.info("AgentBus auto-detectado: %s", default_bus)
+            except Exception:
+                pass
+
+    return app

@@ -1068,4 +1068,212 @@ def main() -> None:
             {
                 "flag": f.flag, "strategy": f.strategy,
                 "confidence": f.confidence, "notes": f.notes,
-         
+                "records": [
+                    {"row_id": r.row_id, "nombre_completo": r.nombre_completo,
+                     "fecha_nacimiento": r.fecha_nacimiento, "municipio": r.municipio,
+                     "seguro_social": r.seguro_social, "source_db": r.source_db}
+                    for r in f.records
+                ],
+            }
+            for f in findings
+        ]
+        sources_label = "_".join(sorted(source_records.keys())).lower()
+        report_path = output_dir / f"audit_cross_db_{sources_label}.json"
+        scan_meta = {
+            "scan_timestamp": scan_started_at.isoformat(),
+            "scanner": "cross-db",
+            "sources": {alias: len(recs) for alias, recs in source_records.items()},
+            "total_findings": len(findings),
+            "duration_seconds": round(elapsed, 3),
+        }
+        report_path.write_text(
+            _json.dumps({"meta": scan_meta, "findings": findings_dicts},
+                        indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"\n  Reporte: {report_path}")
+        print(f"  Tiempo : {elapsed:.2f}s")
+
+    # ── PIPELINE scanner ────────────────────────────────────────────────────
+    elif args.scanner == "pipeline":
+        _run_pipeline(args, output_dir, scan_started_at, start_time)
+
+    # ── NOMINA scanner ──────────────────────────────────────────────────────
+    elif args.scanner == "nomina":
+        import json as _json
+        from scanner_agent.detection.nomina_scanner import run_nomina_scan
+        from scanner_agent.execution_plan import (
+            build_nomina_plan, display_plan, confirm_execution,
+            log_execution_start, log_execution_complete,
+        )
+        from scanner_agent.models import AuditDomain
+
+        if not args.sources:
+            print(
+                "[ERROR] --source es requerido para --scanner nomina.\n"
+                "  Formato: ALIAS:connection_string:table\n"
+                "  Requerido: NOMINA\n"
+                "  Opcional:  RD (para detectar DECEASED_EMPLOYEE)\n"
+                "  Ejemplo:\n"
+                "    --source NOMINA:sqlite:///tests/data/mock_nomina.db:nomina_empleados\n"
+                "    --source RD:sqlite:///tests/data/mock_rd.db:defunciones",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Parsear sources
+        nomina_conn = nomina_table = None
+        rd_conn = rd_table = None
+
+        for spec in args.sources:
+            parts = spec.split(":", 1)
+            if len(parts) < 2:
+                print(f"[ERROR] Formato invalido: {spec!r}", file=sys.stderr); sys.exit(1)
+            alias = parts[0].upper()
+            rest_parts = parts[1].rsplit(":", 1)
+            if len(rest_parts) < 2:
+                print(f"[ERROR] Falta tabla en: {spec!r}", file=sys.stderr); sys.exit(1)
+            conn_str, table = rest_parts[0], rest_parts[1]
+            if alias == "NOMINA":
+                nomina_conn, nomina_table = conn_str, table
+            elif alias == "RD":
+                rd_conn, rd_table = conn_str, table
+
+        if not nomina_conn:
+            print("[ERROR] Falta --source NOMINA:...", file=sys.stderr)
+            sys.exit(1)
+
+        exec_log_path = Path(args.exec_log).expanduser().resolve() if args.exec_log \
+            else output_dir / "execution_log.db"
+
+        # ── Plan → Aprobar → Ejecutar ──────────────────────────────────────
+        plan = build_nomina_plan(
+            nomina_conn=nomina_conn, nomina_table=nomina_table,
+            rd_conn=rd_conn, rd_table=rd_table,
+            output_dir=output_dir,
+        )
+        display_plan(plan)
+
+        if args.dry_run:
+            print("  [--dry-run] Plan mostrado. No se ejecuto ninguna operacion.\n")
+            return
+
+        approved = confirm_execution(
+            plan,
+            require_confirmation=not args.yes,
+            approved_by=args.approved_by or "CLI",
+        )
+        if not approved:
+            sys.exit(0)
+
+        exec_id = log_execution_start(plan, exec_log_path,
+                                      approved_by=args.approved_by or "CLI")
+
+        try:
+            # Cargar registros de nomina
+            print(f"\n  Cargando NOMINA ({nomina_table})...", end=" ", flush=True)
+            nomina_cfg = DbScanConfig(
+                connection_string=nomina_conn,
+                table=nomina_table,
+                field_map=NOMINA_FIELD_MAP,
+                source_alias="NOMINA",
+            )
+            nomina_records = scan_db_table(nomina_cfg)
+            for rec in nomina_records:
+                object.__setattr__(rec, "source_domain", AuditDomain.NOMINA)
+            print(f"{len(nomina_records)} registros")
+
+            # Cargar RD si disponible
+            rd_records = []
+            if rd_conn:
+                RD_FIELD_MAP = {
+                    "row_id": "cert_num", "nombre": "nombre",
+                    "apellido_paterno": "apellido_paterno", "apellido_materno": "apellido_materno",
+                    "fecha_nacimiento": "fecha_nacimiento", "seguro_social": "seguro_social",
+                    "municipio": "municipio_res",
+                }
+                print(f"  Cargando RD ({rd_table})...", end=" ", flush=True)
+                rd_cfg = DbScanConfig(
+                    connection_string=rd_conn, table=rd_table,
+                    field_map=RD_FIELD_MAP, source_alias="RD",
+                )
+                rd_records = scan_db_table(rd_cfg)
+                print(f"{len(rd_records)} registros")
+
+            # Ejecutar escaneo de nomina
+            results = run_nomina_scan(nomina_records, rd_records=rd_records if rd_records else None)
+            elapsed = time.perf_counter() - start_time
+
+            total_findings = len(results["findings"])
+            log_execution_complete(exec_log_path, exec_id, total_findings=total_findings)
+
+        except Exception as exc:
+            log_execution_complete(exec_log_path, exec_id, total_findings=0,
+                                   status="failed", error_message=str(exc))
+            raise
+
+        # Serializar y guardar reporte
+        scan_meta = {
+            "scan_timestamp":    scan_started_at.isoformat(),
+            "scanner":           "nomina",
+            "nomina_source":     f"{nomina_conn}:{nomina_table}",
+            "rd_source":         f"{rd_conn}:{rd_table}" if rd_conn else None,
+            "total_records":     results["total_records"],
+            "total_findings":    total_findings,
+            "summary":           results["summary"],
+            "duration_seconds":  round(elapsed, 3),
+            "exec_log":          str(exec_log_path),
+        }
+        report_path = output_dir / "audit_nomina.json"
+        report_path.write_text(
+            _json.dumps({"meta": scan_meta, "findings": results["findings"]},
+                        indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # Resumen terminal
+        sep = "─" * 60
+        print(f"\n{sep}")
+        print("  scanner_agent — Auditoria de Nomina")
+        print(f"{sep}")
+        print(f"  Registros escaneados : {results['total_records']}")
+        summary = results["summary"]
+        print(f"  MULTI_AGENCY         : {summary.get('MULTI_AGENCY_EMPLOYEE', 0)} grupos")
+        print(f"  DECEASED_EMPLOYEE    : {summary.get('DECEASED_EMPLOYEE', 0)} empleados")
+        print(f"  SALARY_ANOMALY       : {summary.get('SALARY_ANOMALY', 0)} anomalias")
+        print(f"  Total hallazgos      : {total_findings}")
+        print(f"  Tiempo               : {elapsed:.2f}s")
+        print(f"  Log de ejecucion     : {exec_log_path}")
+        print(f"  Reporte              : {report_path}")
+        print(f"{sep}\n")
+        print(f"  Revisar en dashboard:")
+        print(f"    scanner-agent --scanner serve --report {report_path} --matriz <ruta>")
+        print()
+
+    # ── AUDIT (multi-agent pipeline) ───────────────────────────────────────
+    elif args.scanner == "audit":
+        _run_audit(args, output_dir, start_time)
+
+    # ── SERVE (web dashboard) ───────────────────────────────────────────────
+    elif args.scanner == "serve":
+        from scanner_agent.web.app import create_app
+
+        report_path = args.report or ""
+        review_log  = args.review_log or str(output_dir / "review_log.json")
+        matriz_path = args.matriz or str(output_dir / "matriz_certificada.db")
+        bus_db_path = args.bus_db or str(output_dir / "agent_bus.db")
+
+        app = create_app(
+            report_path=report_path,
+            review_log_path=review_log,
+            matriz_db_path=matriz_path,
+            bus_db_path=bus_db_path,
+        )
+        print(f"\n  scanner_agent — Dashboard de Revision")
+        print(f"  Reporte   : {report_path or '(ninguno)'}")
+        print(f"  Review log: {review_log}")
+        print(f"  Matriz DB : {matriz_path}")
+        print(f"  Bus DB    : {bus_db_path}")
+        print(f"  URL       : http://{args.host}:{args.port}")
+        print(f"  (Ctrl+C para salir)\n")
+        app.run(host=args.host, port=args.port, debug=False)

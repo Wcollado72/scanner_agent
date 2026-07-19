@@ -35,4 +35,6 @@ def scan_local_paths(paths: list[Path]) -> list[FileRecord]:
                     )
                 )
             except OSError as exc:
-                logger.warning("Could not inspect %s: %s", path, exc)
+                logger.warning("Could not inspect %s: %s", path, exc)
+
+    return records

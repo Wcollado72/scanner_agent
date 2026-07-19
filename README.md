@@ -311,4 +311,4 @@ The project will continue to evolve in small, testable steps:
 3. Add database scanning skeletons and structured connectors.
 4. Add record normalization and matching pipelines.
 5. Add entity resolution and payment anomaly analysis features.
-6. Expand reporting for human review and audit workflows.     
+6. Expand reporting for human review and audit workflows.

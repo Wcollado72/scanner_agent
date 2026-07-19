@@ -544,4 +544,6 @@ class TestOrchestratorEndToEnd:
         tmp_bus.open_session(["ELECTORAL"], started_by="user1")
         tmp_bus.open_session(["NOMINA"], started_by="user2")
 
-        sessions = orch.list_recent
+        sessions = orch.list_recent_sessions(limit=5)
+        assert len(sessions) >= 2
+        assert all("session_id" in s for s in sessions)
