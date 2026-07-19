@@ -81,7 +81,8 @@ class ReportAgent(BaseAgent):
         include_dismissed = payload.get("include_dismissed", False)
         formats    = payload.get("formats", ["json", "summary"])
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if not self.config.dry_run:
+            output_dir.mkdir(parents=True, exist_ok=True)
 
         self.logger.info(
             "ReportAgent iniciando sesion=%s output=%s",
@@ -120,7 +121,7 @@ class ReportAgent(BaseAgent):
 
         # 3. Generar reporte JSON
         report_path = None
-        if "json" in formats:
+        if "json" in formats and not self.config.dry_run:
             report_path = self._write_json_report(
                 session_id=session_id,
                 certified=certified,
@@ -131,7 +132,7 @@ class ReportAgent(BaseAgent):
 
         # 4. Generar resumen ejecutivo
         summary_path = None
-        if "summary" in formats:
+        if "summary" in formats and not self.config.dry_run:
             summary_path = self._write_summary(
                 session_id=session_id,
                 certified=certified,
