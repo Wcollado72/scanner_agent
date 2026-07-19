@@ -101,7 +101,6 @@ class DomainScannerAgent(BaseAgent):
         from scanner_agent.scanners.db_scanner import DbScanConfig, scan_db_table
         from scanner_agent.detection.record_matcher import run_full_match
         from scanner_agent.detection.cross_db_matcher import run_cross_db_match
-        from scanner_agent.detection.address_analyzer import run_address_analysis
 
         sources = payload.get("sources", {})
         tables  = payload.get("tables", {})
@@ -185,12 +184,14 @@ class DomainScannerAgent(BaseAgent):
         try:
             cfg = DbScanConfig(
                 connection_string=conn_str,
-                table_name=table,
+                table=table,
                 field_map=field_map,
-                source_db=alias,
-                source_domain=domain,
+                source_alias=alias,
             )
             rows = scan_db_table(cfg)
+            if domain != AuditDomain.ELECTORAL:
+                for rec in rows:
+                    object.__setattr__(rec, "source_domain", domain)
             self.logger.info("  [%s] %d registros cargados", phase_label, len(rows))
 
             groups = run_full_match(rows)
@@ -225,20 +226,19 @@ class DomainScannerAgent(BaseAgent):
     ) -> int:
         """Detecta clusters anomalos de direccion en el padron electoral."""
         from scanner_agent.scanners.db_scanner import DbScanConfig, scan_db_table
-        from scanner_agent.detection.address_analyzer import run_address_analysis
+        from scanner_agent.detection.address_analyzer import find_address_clusters
 
         self.logger.info("  [address-clusters] Analizando clusters en %s", alias)
 
         try:
             cfg = DbScanConfig(
                 connection_string=conn_str,
-                table_name=table,
+                table=table,
                 field_map=field_map,
-                source_db=alias,
-                source_domain=AuditDomain.ELECTORAL,
+                source_alias=alias,
             )
             rows = scan_db_table(cfg)
-            groups = run_address_analysis(rows)
+            groups = find_address_clusters(rows)
             count = 0
             for grp in groups:
                 finding_id = self.publish_finding(
@@ -274,17 +274,15 @@ class DomainScannerAgent(BaseAgent):
         try:
             rd_cfg = DbScanConfig(
                 connection_string=sources["RD"],
-                table_name=tables.get("RD", _DEFAULT_TABLES["RD"]),
+                table=tables.get("RD", _DEFAULT_TABLES["RD"]),
                 field_map=_RD_FIELD_MAP,
-                source_db="RD",
-                source_domain=AuditDomain.ELECTORAL,
+                source_alias="RD",
             )
             cee_cfg = DbScanConfig(
                 connection_string=sources["CEE"],
-                table_name=tables.get("CEE", _DEFAULT_TABLES["CEE"]),
+                table=tables.get("CEE", _DEFAULT_TABLES["CEE"]),
                 field_map=_CEE_FIELD_MAP,
-                source_db="CEE",
-                source_domain=AuditDomain.ELECTORAL,
+                source_alias="CEE",
             )
             rd_rows  = scan_db_table(rd_cfg)
             cee_rows = scan_db_table(cee_cfg)
@@ -346,12 +344,13 @@ class DomainScannerAgent(BaseAgent):
         try:
             cfg = DbScanConfig(
                 connection_string=sources["NOMINA"],
-                table_name=tables.get("NOMINA", _DEFAULT_TABLES["NOMINA"]),
+                table=tables.get("NOMINA", _DEFAULT_TABLES["NOMINA"]),
                 field_map=_NOMINA_FIELD_MAP,
-                source_db="NOMINA",
-                source_domain=AuditDomain.NOMINA,
+                source_alias="NOMINA",
             )
             rows = scan_db_table(cfg)
+            for rec in rows:
+                object.__setattr__(rec, "source_domain", AuditDomain.NOMINA)
             self.logger.info("  [nomina] %d registros cargados", len(rows))
 
             # run_nomina_scan retorna lista de RecordMatchGroup
@@ -359,10 +358,9 @@ class DomainScannerAgent(BaseAgent):
             if "RD" in sources:
                 rd_cfg = DbScanConfig(
                     connection_string=sources["RD"],
-                    table_name=tables.get("RD", _DEFAULT_TABLES["RD"]),
+                    table=tables.get("RD", _DEFAULT_TABLES["RD"]),
                     field_map=_RD_FIELD_MAP,
-                    source_db="RD",
-                    source_domain=AuditDomain.ELECTORAL,
+                    source_alias="RD",
                 )
                 rd_rows_for_cross = scan_db_table(rd_cfg)
 
